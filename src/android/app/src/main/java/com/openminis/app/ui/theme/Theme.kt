@@ -145,6 +145,12 @@ private val DarkColorScheme = darkColorScheme(
 @Composable
 fun minisFabColor(): Color = LocalChatPalette.current.fabAccent
 
+// Icon tint paired with [minisFabColor]. Reads from the palette so the dynamic
+// path can pair onPrimary with the wallpaper-derived fabAccent; the static
+// path keeps the White the icon hardcoded before this slot existed.
+@Composable
+fun minisFabContentColor(): Color = LocalChatPalette.current.fabOnAccent
+
 // App-wide shape system — larger corners for a modern, friendly feel
 // DropdownMenu uses extraSmall, Dialog uses extraLarge, BottomSheet uses extraLarge
 private val MinisShapes = Shapes(
@@ -181,7 +187,16 @@ fun MinisTheme(
         else -> LightColorScheme
     }
     val typography = scaledTypography(fontScale)
-    val chatPalette = if (darkTheme) DarkChatPalette else LightChatPalette
+    val fallbackChatPalette = if (darkTheme) DarkChatPalette else LightChatPalette
+    val chatPalette =
+        if (dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Same gate as the scheme branch: the merged scheme only carries
+            // wallpaper accents on that path, and the chat accents must pair
+            // with what the rest of the UI is showing.
+            dynamicChatPalette(colorScheme, fallbackChatPalette)
+        } else {
+            fallbackChatPalette
+        }
 
     MaterialTheme(
         colorScheme = colorScheme,
@@ -229,6 +244,45 @@ internal fun dynamicMinisScheme(base: ColorScheme, chrome: ColorScheme): ColorSc
         surfaceContainerHighest = chrome.surfaceContainerHighest,
         outline = chrome.outline,
         outlineVariant = chrome.outlineVariant,
+    )
+
+/**
+ * [T-android-monet-dynamic-color] Chat accents follow the wallpaper.
+ *
+ * The chat palette is where Minis is most itself — 34 slots of hand-tuned iOS
+ * system colors — and it does not read [MaterialTheme.colorScheme], so the
+ * scheme merge alone left the biggest visible surface (chat) untouched, which
+ * is why toggling dynamic color changed almost nothing a user could see.
+ *
+ * Only the ACCENT slots follow the wallpaper scheme, and each takes a slot the
+ * framework already contrast-tunes rather than a hand-blended guess:
+ *  - userBubble = primaryContainer: Monet designs primaryContainer to pair
+ *    with dark-on-light / light-on-dark text, and the bubble text is
+ *    onSurface (black/white) — the pairing holds in both modes without any
+ *    alpha arithmetic (the T-android-user-bubble-dark-contrast note in
+ *    ChatColors.kt is exactly the failure mode translucent guesses produce).
+ *  - sendButton / link / thinking / fabAccent = primary: tone-40 on white and
+ *    tone-80 on black are the pairings Material You derives primary FOR.
+ *  - fabOnAccent = onPrimary: the FAB icon tint, paired by construction. The
+ *    static palettes keep White, matching the icon's previous hardcoded tint,
+ *    so the OFF path is byte-identical.
+ *  - toastBg = primary at the same 0x2E alpha both static palettes use.
+ *
+ * Neutral slots (backgrounds, input, tool capsules, code blocks) and semantic
+ * slots (warning orange, syntax green, blockquote bar) stay on [fallback] —
+ * the iOS identity lives there, and syntax/warning hues carry meaning.
+ *
+ * Pure so the rule is unit-testable alongside [dynamicMinisScheme].
+ */
+internal fun dynamicChatPalette(scheme: ColorScheme, fallback: ChatPalette): ChatPalette =
+    fallback.copy(
+        userBubble = scheme.primaryContainer,
+        sendButton = scheme.primary,
+        link = scheme.primary,
+        thinking = scheme.primary,
+        toastBg = scheme.primary.copy(alpha = 0.18f),
+        fabAccent = scheme.primary,
+        fabOnAccent = scheme.onPrimary,
     )
 
 private fun TextStyle.scale(factor: Float): TextStyle =

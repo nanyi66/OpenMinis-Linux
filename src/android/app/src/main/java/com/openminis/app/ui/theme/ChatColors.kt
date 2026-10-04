@@ -56,6 +56,7 @@ data class ChatPalette(
     val sheetHeaderBg: Color,
     val sheetHeaderBorder: Color,
     val fabAccent: Color,
+    val fabOnAccent: Color,
 )
 
 val LightChatPalette = ChatPalette(
@@ -93,6 +94,7 @@ val LightChatPalette = ChatPalette(
     sheetHeaderBg = Color(0xFFFFFFFF),
     sheetHeaderBorder = Color(0x1A000000),
     fabAccent = Color(0xFFB7AF96),
+    fabOnAccent = Color.White,
 )
 
 // T153: Android-specific dark palette tweaks. iOS borrows the system
@@ -151,6 +153,7 @@ val DarkChatPalette = ChatPalette(
     sheetHeaderBg = Color(0xFF2C2C2E),
     sheetHeaderBorder = Color(0x33FFFFFF),
     fabAccent = Color(0xFF504C42),
+    fabOnAccent = Color.White,
 )
 
 val LocalChatPalette = compositionLocalOf { LightChatPalette }

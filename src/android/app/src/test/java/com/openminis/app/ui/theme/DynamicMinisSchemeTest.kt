@@ -144,4 +144,45 @@ class DynamicMinisSchemeTest {
         val merged = dynamicMinisScheme(base, chromeLight)
         assertEquals(err, merged.error)
     }
+
+    @Test
+    fun `chat accent slots come from the wallpaper scheme`() {
+        val scheme = wallpaperBase(dark = false)
+        val merged = dynamicChatPalette(scheme, LightChatPalette)
+        assertEquals(scheme.primaryContainer, merged.userBubble)
+        assertEquals(scheme.primary, merged.sendButton)
+        assertEquals(scheme.primary, merged.link)
+        assertEquals(scheme.primary, merged.thinking)
+        assertEquals(scheme.primary, merged.fabAccent)
+        assertEquals(scheme.onPrimary, merged.fabOnAccent)
+        assertEquals(scheme.primary.copy(alpha = 0.18f), merged.toastBg)
+    }
+
+    @Test
+    fun `chat neutral and semantic slots stay with Minis`() {
+        val scheme = wallpaperBase(dark = true)
+        val merged = dynamicChatPalette(scheme, DarkChatPalette)
+        // Neutral chrome keeps the T-153 dark ramp...
+        assertEquals(DarkChatPalette.background, merged.background)
+        assertEquals(DarkChatPalette.toolBg, merged.toolBg)
+        assertEquals(DarkChatPalette.inlineCodeBg, merged.inlineCodeBg)
+        // ...and semantic hues carry meaning, so they never follow the wallpaper.
+        assertEquals(DarkChatPalette.codeBlockText, merged.codeBlockText)
+        assertEquals(DarkChatPalette.inlineCodeText, merged.inlineCodeText)
+        assertEquals(DarkChatPalette.blockquoteBar, merged.blockquoteBar)
+        assertEquals(DarkChatPalette.warningBg, merged.warningBg)
+        // Mode marker survives the copy.
+        assertEquals(true, merged.isDark)
+    }
+
+    @Test
+    fun `off-path chat palette is untouched`() {
+        // dynamicChatPalette must only run behind the same SDK gate as the
+        // scheme branch; when it does not run, the palettes are the statics.
+        // Pinned here so a future "always derive" shortcut has to argue with it.
+        assertEquals(Color.White, LightChatPalette.fabOnAccent)
+        assertEquals(Color.White, DarkChatPalette.fabOnAccent)
+        assertEquals(Color(0xFFB7AF96), LightChatPalette.fabAccent)
+        assertEquals(Color(0xFF504C42), DarkChatPalette.fabAccent)
+    }
 }

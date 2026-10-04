@@ -179,6 +179,7 @@ import com.openminis.app.data.db.ChatSessionEntity
 import com.openminis.app.data.db.FolderEntity
 import com.openminis.app.ui.theme.ChatColors
 import com.openminis.app.ui.theme.minisFabColor
+import com.openminis.app.ui.theme.minisFabContentColor
 import com.openminis.app.data.repository.ChatRepository
 import com.openminis.app.data.repository.ProviderRepository
 import kotlin.math.roundToInt
@@ -1439,7 +1440,7 @@ private fun DualFabRow(
                 Icon(
                     Icons.Outlined.CreateNewFolder,
                     contentDescription = stringResource(R.string.sessionlist_fab_new_folder),
-                    tint = Color.White,
+                    tint = minisFabContentColor(),
                     modifier = Modifier.size(24.dp),
                 )
             }
