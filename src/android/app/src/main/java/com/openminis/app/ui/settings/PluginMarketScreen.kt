@@ -118,18 +118,11 @@ fun PluginMarketScreen(
                     },
                     showDivider = index < plugins.lastIndex,
                 )
-                SettingsSwitchRow(
-                    title = stringResource(R.string.plugin_market_allow_private),
-                    subtitle = stringResource(R.string.plugin_market_allow_private_desc),
-                    checked = com.openminis.app.plugins.ConnectorNetworkPolicy.allowsPrivate(context, plugin),
-                    enabled = on,
-                    onCheckedChange = { checked ->
-                        com.openminis.app.plugins.ConnectorNetworkPolicy.setAllowsPrivate(context, plugin, checked)
-                        com.openminis.app.plugins.OnlineApiTool.evictNetworkClient(plugin)
-                        installedTick++
-                    },
-                    showDivider = index < plugins.lastIndex,
-                )
+                // [T-plugin-market-private-row-removed] No per-connector toggle:
+                // private-network targets are allowed by default (cloud
+                // metadata hosts remain blocked by ConnectorNetworkPolicy), so
+                // a switch that starts on and rarely changes is noise — it
+                // rendered once per catalog entry.
             }
         }
     }

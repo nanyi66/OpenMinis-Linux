@@ -763,8 +763,6 @@
     <string name="perm_privacy_global_title">隱私權限總策略</string>
     <string name="perm_privacy_global_desc">適用於日曆、位置、剪貼簿、聯絡人、其他工作階段和相片。單項拒絕仍然有效。</string>
     <string name="perm_privacy_global_level">隱私工具預設策略</string>
-    <string name="plugin_market_allow_private">允許存取私有網路目標</string>
-    <string name="plugin_market_allow_private_desc">僅對目前已安裝的 connector 生效；雲端中繼資料位址仍一律禁止。</string>
     <string name="plugin_market_config_trust_note">憑證和私有網路權限會綁定 connector 端點與 API 定義；設定變更後需重新檢查並安裝。</string>
     <string name="perm_section_media">媒體</string>
     <string name="perm_section_system">系統</string>

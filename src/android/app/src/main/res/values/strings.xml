@@ -261,8 +261,6 @@
     <string name="plugin_market_empty">No remote plugins. Check network and retry.</string>
     <string name="plugin_market_api_key">API key</string>
     <string name="plugin_market_install">Install</string>
-    <string name="plugin_market_allow_private">Allow private network targets</string>
-    <string name="plugin_market_allow_private_desc">Only for this installed connector; cloud metadata hosts remain blocked.</string>
     <string name="plugin_market_config_trust_note">Connector credentials and private-network access are bound to its endpoint and API definition; changed configurations must be reviewed and reinstalled.</string>
     <string name="settings_collab_roles_section">Catalog roles</string>
     <string name="settings_collab_roles_footer">Pass these names as spawn_agent role to inject focus, do-not, when-silent, and who-to-ask routing. Tap a custom role to edit or delete; new roles with the same name shadow built-ins.</string>
