@@ -450,6 +450,10 @@ internal suspend fun ChatViewModel.runAgentLoop(
         // block opens (which happens after a tool_use / thinking break
         // interrupts the text run).
         val turnTextSb = StringBuilder()
+        // [T-stall-echo-strip] Armed only when the previous attempt stalled
+        // mid-stream (see the retry-rollback path); the retried attempt's
+        // text deltas route through it before reaching any consumer.
+        var stallEchoStripper: com.openminis.app.provider.StallEchoStripper? = null
         var currentTextBlockSb: StringBuilder? = null
         // [T-android-tool-splits-reply-fix] Index (into allToolBlocks) of
         // THIS turn's single text block, used only when the provider's
@@ -664,9 +668,20 @@ internal suspend fun ChatViewModel.runAgentLoop(
                     if (thinkIdx >= 0 && allToolBlocks[thinkIdx].toolStatus != ToolBlockStatus.SUCCESS) {
                         allToolBlocks[thinkIdx] = allToolBlocks[thinkIdx].copy(toolStatus = ToolBlockStatus.SUCCESS)
                     }
+                    // [T-stall-echo-strip] Route the delta through the echo
+                    // suppressor when the previous attempt stalled mid-stream:
+                    // the retried request carried a verbatim tail of the
+                    // already-shown text as a continuation seed, and echo-prone
+                    // models restate it before continuing. Empty output means
+                    // the delta is still aligned inside the seed (probe phase)
+                    // — hold every UI-side consumer until it resolves.
+                    val strippedDelta = stallEchoStripper?.feed(chunk.text) ?: chunk.text
+                    if (strippedDelta.isEmpty() && stallEchoStripper != null) {
+                        return@collect
+                    }
                     // T307: append-only on the StringBuilder; .toString()
                     // is taken once below at flush time, not per delta.
-                    turnTextSb.append(chunk.text)
+                    turnTextSb.append(strippedDelta)
                     activeRun?.updateAssistantText(accumulatedText + turnTextSb.toString())
                     // Append to the trailing text block — or open a new one if the last
                     // block isn't a text block (i.e. a tool call or thinking was in between).
@@ -694,22 +709,22 @@ internal suspend fun ChatViewModel.runAgentLoop(
                                 "[T-android-tool-splits-reply-fix] post-tool_calls content delta merged into pre-tool text block (model=${currentProvider.model.id})",
                             )
                         }
-                        currentTextBlockSb!!.append(chunk.text)
+                        currentTextBlockSb!!.append(strippedDelta)
                         currentTextBlockSb!!
                     } else if (!monolithic && lastIdx >= 0 && allToolBlocks[lastIdx].kind == "text" && currentTextBlockSb != null) {
-                        currentTextBlockSb!!.append(chunk.text)
+                        currentTextBlockSb!!.append(strippedDelta)
                         currentTextBlockSb!!
                     } else {
                         // New text run — either first text after a tool_use/thinking
                         // break, or first text in this turn. Open a fresh block AND
                         // a fresh accumulator. The new block's content carries the
                         // first delta verbatim; subsequent deltas append to the SB.
-                        val freshSb = StringBuilder(chunk.text)
+                        val freshSb = StringBuilder(strippedDelta)
                         currentTextBlockSb = freshSb
                         val block = AssistantBlock(
                             id = "text_${turn}_${allToolBlocks.size}",
                             kind = "text",
-                            content = chunk.text,
+                            content = strippedDelta,
                         )
                         if (monolithic) {
                             // Single text block per response. If tool blocks
@@ -739,7 +754,7 @@ internal suspend fun ChatViewModel.runAgentLoop(
                     // opens (or a newline lands during a short reply). Pending
                     // text lives in `pendingChunkSb` so the stream-end final
                     // flush at line ~3580 can drain it.
-                    pendingChunkSb.append(chunk.text)
+                    pendingChunkSb.append(strippedDelta)
                     val len = turnTextSb.length
                     val unflushed = len - lastFlushedLen
                     val throttle = textDeltaThrottleMs(len)
@@ -998,6 +1013,34 @@ internal suspend fun ChatViewModel.runAgentLoop(
                 }
             }
                 }  // end collect
+                // [T-stall-echo-strip] Stream finished: resolve any seed-
+                // aligned bytes the stripper still holds (and its final echo
+                // determination) before the finalize snapshot below —
+                // otherwise a short resumed reply would never surface.
+                stallEchoStripper?.let { stripper ->
+                    val tail = stripper.flush()
+                    if (tail.isNotEmpty()) {
+                        turnTextSb.append(tail)
+                        val blockSb = currentTextBlockSb
+                        if (blockSb == null) {
+                            // No text block open (the whole attempt was held
+                            // in the probe buffer) — open one for the tail.
+                            val freshSb = StringBuilder(tail)
+                            currentTextBlockSb = freshSb
+                            allToolBlocks.add(
+                                AssistantBlock(
+                                    id = "text_${turn}_${allToolBlocks.size}",
+                                    kind = "text",
+                                    content = tail,
+                                ),
+                            )
+                        } else {
+                            blockSb.append(tail)
+                        }
+                        pendingChunkSb.append(tail)
+                    }
+                    stallEchoStripper = null
+                }
                 // T94 fix 2: flush any text that landed in the throttle
                 // window after the last UI tick. The retry-rollback /
                 // turn-finalize paths below assume _messages reflects all
@@ -1123,7 +1166,14 @@ internal suspend fun ChatViewModel.runAgentLoop(
                     // already-produced text into the retried request so the model
                     // continues instead of regenerating from scratch.
                     if ((actual as? com.openminis.app.data.model.LLMError.TransientError)?.stalledAfterFirstEvent == true) {
-                        stallResumeContext = com.openminis.app.provider.StallResume.note(turnTextSb.toString())
+                        val partial = turnTextSb.toString()
+                        stallResumeContext = com.openminis.app.provider.StallResume.note(partial)
+                        // [T-stall-echo-strip] Arm the echo suppressor for the
+                        // retried attempt. The seed must be the exact bytes the
+                        // note embeds — StallResume.tail is the single source.
+                        stallEchoStripper = com.openminis.app.provider.StallEchoStripper(
+                            com.openminis.app.provider.StallResume.tail(partial),
+                        )
                     }
                     turnTextSb.setLength(0)
                     currentTextBlockSb = null
