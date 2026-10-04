@@ -60,16 +60,69 @@ internal class Utf8ChunkDecoder {
  *
  * A suffix that is only a prefix of the marker is held back so it is not
  * appended to the command output and then missed on the next chunk.
+ *
+ * [T-android-stale-stream-gate] The framer also gates on a BEGIN line
+ * (`__MINIS_GO_<marker>__`) that the command wrapper echoes BEFORE running
+ * anything. Bytes that arrive before it belong to no current command — late
+ * bash job-control notifications ("… Killed" from the previous command's
+ * watchdog reap), a late offload response, or a replayed previous payload —
+ * and field evidence showed such a payload re-delivered under four different
+ * later tool-call ids in one evening. Everything before BEGIN is dropped here
+ * (a bounded sample is kept for diagnostics); only the current command's own
+ * bytes are framed. When the shell dies before BEGIN (proot never reached the
+ * command), the buffered bytes are flushed instead of dropped so the death
+ * path keeps proot's last words.
  */
 internal class MarkerFramer(marker: String) {
     private val prefix = "__MINIS_DONE_${marker}_EXIT_"
     private val full = Regex("__MINIS_DONE_${Regex.escape(marker)}_EXIT_(\\d+)__")
+    private val beginPrefix = "__MINIS_GO_${marker}__"
     private val carry = StringBuilder()
+    private var armed = false
+    private var preBeginDropped = 0
+    private val preBeginSample = StringBuilder()
+    private val preBeginAll = StringBuilder()
 
     data class Step(val output: String, val completed: Boolean, val exitCode: Int)
 
+    /** Bytes dropped before the BEGIN line, for post-mortem diagnostics. */
+    fun preBeginDroppedChars(): Int = preBeginDropped
+
+    /** First bytes dropped before BEGIN (bounded) — identifies the emitter. */
+    fun preBeginDroppedSample(): String = preBeginSample.toString()
+
     fun push(text: String, endOfInput: Boolean = false): Step {
         if (text.isNotEmpty()) carry.append(text)
+        if (!armed) {
+            val beginIdx = carry.indexOf(beginPrefix)
+            if (beginIdx < 0) {
+                if (endOfInput) {
+                    // Shell died before the command started: none of this is
+                    // this command's output, but it IS proot's dying words —
+                    // flush the buffered pre-begin bytes for the death path
+                    // (readLoop completes the callback with this output). The
+                    // final chunk never went through noteDropped, so fold it
+                    // in before flushing.
+                    preBeginAll.append(carry)
+                    if (preBeginAll.length > PRE_BEGIN_ALL_MAX) {
+                        preBeginAll.delete(PRE_BEGIN_ALL_MAX, preBeginAll.length)
+                    }
+                    val rest = preBeginAll.toString()
+                    preBeginAll.setLength(0)
+                    carry.setLength(0)
+                    return Step(rest, completed = false, exitCode = -1)
+                }
+                val heldFrom = holdIndex(carry.toString(), beginPrefix)
+                noteDropped(heldFrom)
+                carry.delete(0, heldFrom)
+                return Step("", completed = false, exitCode = -1)
+            }
+            noteDropped(beginIdx)
+            carry.delete(0, beginIdx + beginPrefix.length)
+            if (carry.startsWith("\r\n")) carry.delete(0, 2) else if (carry.startsWith("\n")) carry.deleteCharAt(0)
+            armed = true
+            preBeginAll.setLength(0)
+        }
         val match = full.find(carry)
         if (match != null) {
             val output = carry.substring(0, match.range.first)
@@ -88,6 +141,17 @@ internal class MarkerFramer(marker: String) {
         return Step(output, completed = false, exitCode = -1)
     }
 
+    private fun noteDropped(upto: Int) {
+        if (upto <= 0) return
+        preBeginDropped += upto
+        if (preBeginSample.length < PRE_BEGIN_SAMPLE_MAX) {
+            preBeginSample.append(carry.substring(0, minOf(upto, PRE_BEGIN_SAMPLE_MAX - preBeginSample.length)))
+        }
+        if (preBeginAll.length < PRE_BEGIN_ALL_MAX) {
+            preBeginAll.append(carry.substring(0, minOf(upto, PRE_BEGIN_ALL_MAX - preBeginAll.length)))
+        }
+    }
+
     private fun holdIndex(text: String, markerPrefix: String): Int {
         val idx = text.indexOf(markerPrefix)
         if (idx >= 0) return idx
@@ -98,5 +162,10 @@ internal class MarkerFramer(marker: String) {
             }
         }
         return text.length
+    }
+
+    private companion object {
+        const val PRE_BEGIN_SAMPLE_MAX = 200
+        const val PRE_BEGIN_ALL_MAX = 4096
     }
 }

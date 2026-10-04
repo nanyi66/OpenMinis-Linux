@@ -599,6 +599,15 @@ class PersistentShell(
             // `set -e`. That would abort the rest of a compound command and
             // skip the done marker, so the caller sees a cut-off with no code.
             append("set +e\n")
+            // [T-android-stale-stream-gate] First thing the wrapper writes.
+            // Everything the pty still holds from BEFORE this command — the
+            // previous command's late watchdog-kill notification, a late
+            // offload response, a replayed payload — arrives in THIS command's
+            // read window; the framer drops it all before BEGIN and keeps a
+            // bounded sample for ShellExecDiag. Field evidence (2026-10-04):
+            // one command's full result re-delivered under four different
+            // later tool-call ids because those bytes were never gated off.
+            append("echo \"__MINIS_GO_${marker}__\"\n")
             // Supervisor re-arm. Not a subshell around the command, not a trap,
             // not a second ulimit. On expiry `kill -TERM -$$` kills the group.
             append(GuardianScript.persistentCommand(command, budget.wallSeconds))
@@ -632,6 +641,16 @@ class PersistentShell(
                         beat?.cancel()
                         if (cb.output.truncated) {
                             Log.w(TAG, "output truncated, dropped ${cb.output.dropped} chars")
+                        }
+                        // [T-android-stale-stream-gate] Make dropped pre-BEGIN
+                        // bytes observable: the sample is the fingerprint of
+                        // whatever emitted stale bytes into the stream.
+                        if (cb.framer.preBeginDroppedChars() > 0) {
+                            Log.w(
+                                TAG,
+                                "pre-begin bytes dropped: ${cb.framer.preBeginDroppedChars()} " +
+                                    "sample=${cb.framer.preBeginDroppedSample().take(160).replace('\n', '|')}",
+                            )
                         }
                         if (cont.isActive) {
                             cont.resume(Pair(output, exitCode))
