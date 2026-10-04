@@ -58,10 +58,17 @@ def _log(msg):
 
 
 def _emit(obj, pretty):
-    if pretty:
-        print(json.dumps(obj, ensure_ascii=False, indent=2))
-    else:
-        print(json.dumps(obj, ensure_ascii=False))
+    payload = json.dumps(obj, ensure_ascii=False, indent=2) if pretty \
+        else json.dumps(obj, ensure_ascii=False)
+    try:
+        print(payload)
+    except BrokenPipeError:
+        # [T-mcp-cli-epipe-safe] The caller is gone (timeout kill, closed
+        # pipe). Nothing can reach stdout anymore — log it and exit quietly
+        # instead of raising a second BrokenPipeError from inside the top-level
+        # error handler (observed on device as UNEXPECTED pairs in the log).
+        _log("stdout closed by caller (EPIPE); result dropped")
+        sys.exit(1)
 
 
 def _fail(message, code, server=None, pretty=False):

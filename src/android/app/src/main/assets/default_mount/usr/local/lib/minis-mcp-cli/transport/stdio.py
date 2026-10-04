@@ -9,6 +9,7 @@ automatic retry. 5-minute overall timeout per call.
 Missing commands (npx/uvx/...) are auto-resolved via utils.deps first.
 """
 
+import collections
 import json
 import os
 import subprocess
@@ -34,6 +35,10 @@ class STDIOTransport:
         self.env = _expand_env_map(server.get("env"))
         self.server_name = server_name
         self._id = 0
+        # [T-mcp-stdio-stderr-capture] see daemon.MCPServerProcess — the crash
+        # reason must reach the agent, not /dev/null.
+        self._stderr_tail = collections.deque(maxlen=50)
+        self._stderr_lock = threading.Lock()
 
     def _next_id(self):
         self._id += 1
@@ -42,11 +47,11 @@ class STDIOTransport:
     def _spawn(self):
         deps.ensure_command(self.command)
         try:
-            return subprocess.Popen(
+            proc = subprocess.Popen(
                 [self.command] + list(self.args),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 env=self.env,
                 text=True,
                 bufsize=1,
@@ -55,6 +60,34 @@ class STDIOTransport:
             raise MCPError("CONNECTION_ERROR", "command not found: %s" % self.command)
         except OSError as exc:
             raise MCPError("CONNECTION_ERROR", str(exc))
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr, args=(proc,), daemon=True)
+        self._stderr_thread.start()
+        return proc
+
+    def _drain_stderr(self, proc):
+        try:
+            for raw in proc.stderr:
+                line = raw.rstrip()
+                if line:
+                    with self._stderr_lock:
+                        self._stderr_tail.append(line)
+        except OSError:
+            pass
+
+    def _attach_stderr(self, exc):
+        if getattr(exc, "_stderr_attached", False):
+            return exc  # already carrying the tail (raise site + outer except)
+        thread = getattr(self, "_stderr_thread", None)
+        if thread is not None and thread.is_alive():
+            thread.join(0.25)
+        with self._stderr_lock:
+            tail = list(self._stderr_tail)
+        if tail:
+            exc._stderr_attached = True
+            text = "\n".join(tail)[-800:]
+            exc.message = "%s | server stderr: %s" % (exc.message, text)
+        return exc
 
     def _send(self, proc, method, params=None, notify=False):
         body = {"jsonrpc": "2.0", "method": method}
@@ -94,9 +127,11 @@ class STDIOTransport:
         t.start()
         t.join(TIMEOUT_SECONDS)
         if t.is_alive():
-            raise MCPError("TIMEOUT", "no reply after %ds" % TIMEOUT_SECONDS)
+            raise self._attach_stderr(MCPError(
+                "TIMEOUT", "no reply after %ds" % TIMEOUT_SECONDS))
         if "msg" not in result_box:
-            raise MCPError("STDIO_CRASH", "child exited before replying")
+            raise self._attach_stderr(MCPError(
+                "STDIO_CRASH", "child exited before replying"))
         return result_box["msg"]
 
     def _rpc(self, proc, method, params=None):
@@ -131,7 +166,7 @@ class STDIOTransport:
                 self._handshake(proc)
                 return fn(proc)
             except MCPError as exc:
-                last_err = exc
+                last_err = self._attach_stderr(exc)
                 if exc.code != "STDIO_CRASH" or attempt == 1:
                     raise
                 # else: retry once on a crash

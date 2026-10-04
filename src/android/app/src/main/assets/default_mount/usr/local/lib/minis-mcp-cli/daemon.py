@@ -20,6 +20,7 @@ intermediate files. _read_reply uses a reader thread joined with a timeout
 (PRoot); keep both copies byte-identical.
 """
 
+import collections
 import json
 
 def _disabled_tool_names(server):
@@ -74,6 +75,13 @@ class MCPServerProcess:
         self._lock = threading.Lock()
         self._id = 0
         self.last_activity = time.time()
+        # [T-mcp-stdio-stderr-capture] The child's stderr is piped and drained
+        # into a bounded ring so a startup crash can carry the actual reason
+        # ("No module named mcp_server_git") back to the agent instead of the
+        # content-free "process exited before replying". Drained by a thread:
+        # a chatty server must never block on a full stderr pipe.
+        self._stderr_tail = collections.deque(maxlen=50)
+        self._stderr_lock = threading.Lock()
 
     def _next_id(self):
         self._id += 1
@@ -91,7 +99,7 @@ class MCPServerProcess:
                 [command] + list(args),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 env=env,
                 text=True,
                 bufsize=1,
@@ -102,8 +110,45 @@ class MCPServerProcess:
         except OSError as exc:
             raise MCPError("CONNECTION_ERROR", str(exc))
         log.info("[%s] spawned pid=%s", self.name, self.proc.pid)
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr, args=(self.proc,), daemon=True)
+        self._stderr_thread.start()
         self._handshake()
         log.info("[%s] initialized", self.name)
+
+    def _drain_stderr(self, proc):
+        try:
+            for raw in proc.stderr:
+                line = raw.rstrip()
+                if line:
+                    with self._stderr_lock:
+                        self._stderr_tail.append(line)
+        except OSError:
+            pass
+
+    def stderr_tail_text(self):
+        """Last stderr lines, capped, for attachment to crash errors."""
+        # The stdout reader can observe EOF before the stderr drainer has
+        # flushed; give it a moment so the tail is actually populated.
+        thread = getattr(self, "_stderr_thread", None)
+        if thread is not None and thread.is_alive():
+            thread.join(0.25)
+        with self._stderr_lock:
+            tail = list(self._stderr_tail)
+        if not tail:
+            return ""
+        text = "\n".join(tail)
+        return text[-800:]
+
+    def _attach_stderr(self, exc):
+        if getattr(exc, "_stderr_attached", False):
+            return exc  # already carrying the tail (raise site + outer except)
+        tail = self.stderr_tail_text()
+        if tail:
+            exc._stderr_attached = True
+            exc.message = "%s | server stderr: %s" % (exc.message, tail)
+            log.warning("[%s] stderr tail: %s", self.name, tail)
+        return exc
 
     def _send(self, method, params=None, notify=False):
         body = {"jsonrpc": "2.0", "method": method}
@@ -114,8 +159,9 @@ class MCPServerProcess:
         try:
             self.proc.stdin.write(json.dumps(body) + "\n")
             self.proc.stdin.flush()
-        except (BrokenPipeError, ValueError, OSError):
-            raise MCPError("STDIO_CRASH", "[%s] child closed stdin" % self.name)
+        except (BrokenPipeError, ValueError, OSError) as exc:
+            raise self._attach_stderr(MCPError(
+                "STDIO_CRASH", "[%s] child closed stdin (%s)" % (self.name, exc)))
         return body.get("id")
 
     def _read_reply(self, want_id, timeout=RPC_TIMEOUT):
@@ -142,9 +188,11 @@ class MCPServerProcess:
         t.start()
         t.join(timeout)
         if t.is_alive():
-            raise MCPError("TIMEOUT", "[%s] no reply after %ss" % (self.name, timeout))
+            raise self._attach_stderr(MCPError(
+                "TIMEOUT", "[%s] no reply after %ss" % (self.name, timeout)))
         if "msg" not in result_box:
-            raise MCPError("STDIO_CRASH", "[%s] process exited before replying" % self.name)
+            raise self._attach_stderr(MCPError(
+                "STDIO_CRASH", "[%s] process exited before replying" % self.name))
         return result_box["msg"]
 
     def _rpc(self, method, params=None, timeout=RPC_TIMEOUT):
@@ -170,6 +218,7 @@ class MCPServerProcess:
                 "clientInfo": {"name": "minis-mcp-cli", "version": "1.0.0"},
             }, timeout=timeout)
         except MCPError as exc:
+            self._attach_stderr(exc)
             if exc.code == "TIMEOUT":
                 raise MCPError("TIMEOUT", (
                     "[%s] initialization timed out after %ss. This server may "
