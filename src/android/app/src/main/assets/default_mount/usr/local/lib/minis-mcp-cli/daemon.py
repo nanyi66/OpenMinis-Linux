@@ -279,19 +279,42 @@ class MCPHTTPSession:
         self._transport = HTTPTransport(cfg, name)
         self._lock = threading.Lock()
         self.last_activity = time.time()
+        self._listener_sid = None
 
     def is_alive(self):
         return True
 
+    def _ensure_event_listener(self):
+        """[T-mcp-http-get-sse] Start (or re-arm after a re-handshake) the GET
+        SSE listener. Called only after a successful call, so the session is
+        established; failures inside the listener are its own problem."""
+        t = self._transport
+        if not t._initialized:
+            return
+        if (self._listener_sid == t._session_id
+                and getattr(t, "_listener_thread", None)
+                and t._listener_thread.is_alive()):
+            return
+        self._listener_sid = t._session_id
+        t.start_event_listener(
+            on_notification=lambda m, p: log.info(
+                "[%s] server notification: %s", self.name, m),
+            on_server_request=lambda rid, m, p: t._respond_to_server_request(rid, m),
+        )
+
     def list_tools(self):
         with self._lock:
             self.last_activity = time.time()
-            return self._transport.list_tools()
+            tools = self._transport.list_tools()
+        self._ensure_event_listener()
+        return tools
 
     def call_tool(self, tool, arguments):
         with self._lock:
             self.last_activity = time.time()
-            return self._transport.call_tool(tool, arguments)
+            result = self._transport.call_tool(tool, arguments)
+        self._ensure_event_listener()
+        return result
 
     def ping(self):
         with self._lock:
@@ -299,7 +322,7 @@ class MCPHTTPSession:
             return self._transport.ping()
 
     def stop(self):
-        pass
+        self._transport.stop_event_listener()
 
 
 # --- connection pool --------------------------------------------------------

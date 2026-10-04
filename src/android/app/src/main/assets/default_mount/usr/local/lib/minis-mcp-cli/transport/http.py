@@ -14,6 +14,7 @@ Errors are raised as `MCPError(code, message)`; main.py renders the unified
 import json
 import os
 import re
+import threading
 import time
 
 try:
@@ -406,6 +407,125 @@ class HTTPTransport:
             self._reset_session()
             self.initialize()
             return do_call()
+
+    # -- GET event stream (server-initiated messages) --------------------------
+    #
+    # [T-mcp-http-get-sse] Streamable HTTP lets a client hold a GET SSE stream
+    # for server→client notifications (e.g. tools/list_changed) and requests
+    # (ping / sampling / roots). BEST-EFFORT by contract: tool calls never
+    # depend on this stream, a server without GET support answers 405 and the
+    # listener simply ends, and every failure inside the listener is swallowed.
+    # We answer server requests on the POST channel: ping → {}, anything else
+    # → JSON-RPC -32601 (this client implements no sampling/roots features).
+
+    def start_event_listener(self, on_notification=None, on_server_request=None):
+        if getattr(self, "_listener_thread", None) and self._listener_thread.is_alive():
+            return
+        self._listener_stop = threading.Event()
+        self._listener_thread = threading.Thread(
+            target=self._event_listener,
+            args=(on_notification, on_server_request),
+            daemon=True,
+        )
+        self._listener_thread.start()
+
+    def stop_event_listener(self):
+        stop = getattr(self, "_listener_stop", None)
+        if stop is not None:
+            stop.set()
+        resp = getattr(self, "_listener_resp", None)
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:
+                pass
+
+    def _listener_headers(self):
+        headers = dict(self.headers)
+        headers["Accept"] = "text/event-stream"
+        if self.oauth_cfg is not None:
+            try:
+                headers["Authorization"] = "Bearer %s" % self._oauth_access_token()
+            except MCPError:
+                return None  # no usable token → no listener; calls will surface it
+        if self._session_id:
+            headers["Mcp-Session-Id"] = self._session_id
+        if self._initialized:
+            headers["MCP-Protocol-Version"] = "2025-06-18"
+        return headers
+
+    def _event_listener(self, on_notification, on_server_request):
+        try:
+            headers = self._listener_headers()
+            if headers is None:
+                return
+            with httpx.stream(
+                "GET", self.url, headers=headers,
+                timeout=httpx.Timeout(connect=15.0, read=None,
+                                      write=30.0, pool=15.0),
+            ) as resp:
+                if resp.status_code >= 400:
+                    return  # 405 = no GET stream; nothing to listen to
+                self._listener_resp = resp
+                data_buf = []
+                for raw in resp.iter_lines():
+                    if self._listener_stop.is_set():
+                        return
+                    line = raw.strip() if isinstance(raw, str) else raw.decode().strip()
+                    if not line:
+                        if data_buf:
+                            self._dispatch_event(
+                                "\n".join(data_buf), on_notification, on_server_request)
+                            data_buf = []
+                        continue
+                    if line.startswith("data:"):
+                        data_buf.append(line[5:].strip())
+                if data_buf:
+                    self._dispatch_event(
+                        "\n".join(data_buf), on_notification, on_server_request)
+        except Exception:
+            return  # best-effort by contract — never propagate
+        finally:
+            self._listener_resp = None
+
+    def _dispatch_event(self, payload, on_notification, on_server_request):
+        try:
+            msg = json.loads(payload)
+        except ValueError:
+            return
+        if not isinstance(msg, dict) or "method" not in msg:
+            return  # responses to OUR requests do not arrive on this stream
+        if "id" in msg:
+            if on_server_request:
+                on_server_request(msg["id"], msg["method"], msg.get("params"))
+        else:
+            if on_notification:
+                on_notification(msg["method"], msg.get("params"))
+
+    def _respond_to_server_request(self, req_id, method):
+        body = {"jsonrpc": "2.0", "id": req_id}
+        if method == "ping":
+            body["result"] = {}
+        else:
+            body["error"] = {"code": -32601,
+                             "message": "method not supported by this client: %s" % method}
+        headers = dict(self.headers)
+        headers["Content-Type"] = "application/json"
+        if self.oauth_cfg is not None:
+            try:
+                headers["Authorization"] = "Bearer %s" % self._oauth_access_token()
+            except MCPError:
+                return
+        if self._session_id:
+            headers["Mcp-Session-Id"] = self._session_id
+        if self._initialized:
+            headers["MCP-Protocol-Version"] = "2025-06-18"
+        try:
+            httpx.post(self.url, json=body, headers=headers,
+                       timeout=httpx.Timeout(connect=15.0, read=30.0,
+                                             write=30.0, pool=15.0))
+        except httpx.HTTPError:
+            pass  # best-effort
 
     def list_tools(self):
         result = self._call_with_reconnect(lambda: self._post("tools/list"))
