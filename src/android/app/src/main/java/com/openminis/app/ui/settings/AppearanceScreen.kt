@@ -1,6 +1,7 @@
 package com.openminis.app.ui.settings
 
 import com.openminis.app.R
+import com.openminis.app.ui.theme.monetIconTint
 import com.openminis.app.data.repository.AppIconRepository
 import com.openminis.app.ui.components.MinisTextButton
 
@@ -326,7 +327,7 @@ fun AppearanceScreen(
                         androidx.compose.material3.Icon(
                             row.icon,
                             contentDescription = null,
-                            tint = row.tint,
+                            tint = monetIconTint(row.tint),
                         )
                     },
                     showDivider = true,
@@ -379,7 +380,7 @@ fun AppearanceScreen(
                         androidx.compose.material3.Icon(
                             row.icon,
                             contentDescription = null,
-                            tint = row.tint,
+                            tint = monetIconTint(row.tint),
                         )
                     },
                     showDivider = idx < launchRows.size - 1,

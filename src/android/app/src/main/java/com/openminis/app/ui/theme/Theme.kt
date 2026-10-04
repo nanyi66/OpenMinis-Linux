@@ -12,6 +12,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -151,6 +152,33 @@ fun minisFabColor(): Color = LocalChatPalette.current.fabAccent
 @Composable
 fun minisFabContentColor(): Color = LocalChatPalette.current.fabOnAccent
 
+// True only while the wallpaper scheme is actually in effect (dynamic color ON
+// and Android 12+). Consumers use it to swap hand-tuned iOS-parity accents for
+// scheme roles without re-deriving the gate themselves.
+val LocalMonetDynamic = compositionLocalOf { false }
+
+// iOS-parity tile hues that follow the wallpaper when dynamic color is on.
+// Red (destructive) and systemGray (neutral/informational) deliberately stay
+// static: their hue IS the message.
+internal val monetAccentTiles = setOf(
+    Color(0xFF007AFF), // iOS systemBlue
+    Color(0xFF34C759), // iOS systemGreen
+    Color(0xFFFF9500), // iOS systemOrange
+    Color(0xFF5856D6), // iOS indigo
+    Color(0xFFAF52DE), // iOS purple
+    Color(0xFF30B0C7), // iOS teal
+    Color(0xFF5AC8FA), // iOS light teal
+)
+
+/** Tint for plain (chip-less) icons: wallpaper accent in dynamic mode. */
+@Composable
+fun monetIconTint(static: Color): Color =
+    if (LocalMonetDynamic.current && static in monetAccentTiles) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        static
+    }
+
 // App-wide shape system — larger corners for a modern, friendly feel
 // DropdownMenu uses extraSmall, Dialog uses extraLarge, BottomSheet uses extraLarge
 private val MinisShapes = Shapes(
@@ -169,30 +197,21 @@ fun MinisTheme(
     content: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-            // [T-android-monet-dynamic-color] The framework only carries the
-            // system_* color resources on Android 12+, so the gate is a
-            // correctness requirement, not a nicety: below S those resources do
-            // not resolve. minSdk is 26, hence the explicit branch.
-            dynamicMinisScheme(
-                base = if (darkTheme) {
-                    dynamicDarkColorScheme(context)
-                } else {
-                    dynamicLightColorScheme(context)
-                },
-                chrome = if (darkTheme) DarkColorScheme else LightColorScheme,
-            )
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
-    }
+    // [T-android-monet-dynamic-color] The framework only carries the system_*
+    // color resources on Android 12+, so the gate is a correctness
+    // requirement, not a nicety: below S those resources do not resolve.
+    // minSdk is 26, hence the explicit gate. In dynamic mode the wallpaper
+    // scheme supplies EVERY slot — accents AND surfaces; Material You derives
+    // surface/onSurface pairs with contrast built in, so the hand-measured
+    // WCAG notes on the static palettes do not apply to this branch.
+    val dynamicActive = dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val colorScheme = if (dynamicActive) {
+        if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+    } else if (darkTheme) DarkColorScheme else LightColorScheme
     val typography = scaledTypography(fontScale)
     val fallbackChatPalette = if (darkTheme) DarkChatPalette else LightChatPalette
     val chatPalette =
-        if (dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // Same gate as the scheme branch: the merged scheme only carries
-            // wallpaper accents on that path, and the chat accents must pair
-            // with what the rest of the UI is showing.
+        if (dynamicActive) {
             dynamicChatPalette(colorScheme, fallbackChatPalette)
         } else {
             fallbackChatPalette
@@ -203,59 +222,25 @@ fun MinisTheme(
         shapes = MinisShapes,
         typography = typography,
     ) {
-        CompositionLocalProvider(LocalChatPalette provides chatPalette, content = content)
+        CompositionLocalProvider(
+            LocalChatPalette provides chatPalette,
+            LocalMonetDynamic provides dynamicActive,
+            content = content,
+        )
     }
 }
 
 /**
- * [T-android-monet-dynamic-color] Merge a Material You wallpaper scheme with
- * Minis' neutral grouped chrome.
- *
- * Monet derives every slot from the wallpaper, including `surface*`. Minis'
- * visual identity is the iOS-style systemGroupedBackground: a neutral gray
- * page with white / near-black cards. Letting wallpaper tones into those slots
- * recolors every card and settings group at once — a different app. So the
- * accent families (primary / secondary / tertiary and their containers) come
- * from [base], and the neutral chrome (background, onBackground, surface,
- * onSurface, surfaceVariant, onSurfaceVariant, surfaceContainer*, outline*,
- * outlineVariant) comes from [chrome] — the same palette the non-dynamic path
- * uses, so text contrast on those surfaces is exactly what the WCAG notes in
- * this file measured.
- *
- * The on-accent slots deliberately stay on [base]: `onPrimary` must pair with
- * the wallpaper-derived `primary`, not with Minis' hand-tuned teal-on-white.
- *
- * Pure and Context-free so the merge rule is unit-testable; the
- * dynamicLight/DarkColorScheme callers need a Context and only resolve on
- * API 31+, which [MinisTheme] gates.
- */
-internal fun dynamicMinisScheme(base: ColorScheme, chrome: ColorScheme): ColorScheme =
-    base.copy(
-        background = chrome.background,
-        onBackground = chrome.onBackground,
-        surface = chrome.surface,
-        onSurface = chrome.onSurface,
-        surfaceVariant = chrome.surfaceVariant,
-        onSurfaceVariant = chrome.onSurfaceVariant,
-        surfaceContainerLowest = chrome.surfaceContainerLowest,
-        surfaceContainerLow = chrome.surfaceContainerLow,
-        surfaceContainer = chrome.surfaceContainer,
-        surfaceContainerHigh = chrome.surfaceContainerHigh,
-        surfaceContainerHighest = chrome.surfaceContainerHighest,
-        outline = chrome.outline,
-        outlineVariant = chrome.outlineVariant,
-    )
-
-/**
- * [T-android-monet-dynamic-color] Chat accents follow the wallpaper.
+ * [T-android-monet-dynamic-color] The chat palette follows the wallpaper too.
  *
  * The chat palette is where Minis is most itself — 34 slots of hand-tuned iOS
- * system colors — and it does not read [MaterialTheme.colorScheme], so the
- * scheme merge alone left the biggest visible surface (chat) untouched, which
+ * system colors — and it does not read [MaterialTheme.colorScheme], so a
+ * scheme-only change left the biggest visible surface (chat) untouched, which
  * is why toggling dynamic color changed almost nothing a user could see.
  *
- * Only the ACCENT slots follow the wallpaper scheme, and each takes a slot the
- * framework already contrast-tunes rather than a hand-blended guess:
+ * Surface, text and accent slots all derive from the wallpaper scheme; each
+ * takes a slot the framework already contrast-tunes rather than a
+ * hand-blended guess:
  *  - userBubble = primaryContainer: Monet designs primaryContainer to pair
  *    with dark-on-light / light-on-dark text, and the bubble text is
  *    onSurface (black/white) — the pairing holds in both modes without any
@@ -268,21 +253,48 @@ internal fun dynamicMinisScheme(base: ColorScheme, chrome: ColorScheme): ColorSc
  *    so the OFF path is byte-identical.
  *  - toastBg = primary at the same 0x2E alpha both static palettes use.
  *
- * Neutral slots (backgrounds, input, tool capsules, code blocks) and semantic
- * slots (warning orange, syntax green, blockquote bar) stay on [fallback] —
- * the iOS identity lives there, and syntax/warning hues carry meaning.
+ * Semantic slots (warning orange, syntax green, blockquote bar) and the
+ * dark-mode elevation shadow stay on [fallback] — their hue IS the message.
  *
- * Pure so the rule is unit-testable alongside [dynamicMinisScheme].
+ * Pure so the rule is unit-testable alongside the static palettes.
  */
 internal fun dynamicChatPalette(scheme: ColorScheme, fallback: ChatPalette): ChatPalette =
     fallback.copy(
+        // Surfaces — the chat tints with the wallpaper like everything else.
+        background = scheme.background,
+        secondaryBg = scheme.surfaceContainerLow,
+        inputBg = scheme.surfaceContainerLowest,
+        inputIconBg = scheme.surfaceContainerHigh,
+        inputIconBorder = scheme.outlineVariant.copy(alpha = 0.4f),
+        inputBorder = scheme.outlineVariant.copy(alpha = 0.6f),
+        toolBg = scheme.surfaceContainer,
+        toolBorder = scheme.outlineVariant.copy(alpha = 0.5f),
+        toolCapsuleBg = scheme.surfaceContainerLow,
+        separator = scheme.outlineVariant,
+        tableBorder = scheme.outlineVariant.copy(alpha = 0.5f),
+        thumbnailBorder = scheme.outlineVariant.copy(alpha = 0.4f),
+        sheetHeaderBg = scheme.surfaceContainerLow,
+        sheetHeaderBorder = scheme.outlineVariant.copy(alpha = 0.5f),
+        inlineCodeBg = scheme.surfaceContainerLow,
+        // Text pairs come with the scheme — contrast already tuned.
+        primaryText = scheme.onSurface,
+        secondaryText = scheme.onSurfaceVariant,
+        tertiaryText = scheme.outline,
+        disabledText = scheme.onSurface.copy(alpha = 0.18f),
+        sendButtonDisabled = scheme.onSurface.copy(alpha = 0.18f),
+        // Accents (see the FAB pairing note above; userBubble text is
+        // onSurface, which pairs with primaryContainer in both modes).
         userBubble = scheme.primaryContainer,
         sendButton = scheme.primary,
         link = scheme.primary,
         thinking = scheme.primary,
         toastBg = scheme.primary.copy(alpha = 0.18f),
-        fabAccent = scheme.primary,
-        fabOnAccent = scheme.onPrimary,
+        fabAccent = scheme.primaryContainer,
+        fabOnAccent = scheme.onPrimaryContainer,
+        // Kept on the fallback on purpose: codeBlockBg/Text and inlineCodeText
+        // are terminal-green syntax identity, blockquoteBar/warning* are
+        // semantic hues, inputShadow is the dark-mode elevation shadow, and
+        // isDark marks the mode for consumers that branch on it.
     )
 
 private fun TextStyle.scale(factor: Float): TextStyle =
