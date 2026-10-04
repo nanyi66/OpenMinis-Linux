@@ -492,6 +492,23 @@ internal suspend fun ChatViewModel.runAgentLoop(
         // thoughtSignature for this turn's calls (null for other providers).
         val toolCallSignatures = mutableMapOf<String, String>()
 
+        // [T-android-duplicate-toolcall-replay] Idempotence for re-emitted
+        // ToolCallComplete events. A gateway/SSE replay can deliver the same
+        // completed call (same raw id, same name, same args) twice within one
+        // stream attempt; the [T-dedupe-toolcallid] renamer turns the second
+        // sighting into a fresh id ("<id>-2") so the receiver contract stays
+        // happy, but the execution loop would dispatch it as a brand-new
+        // call — tool runs twice, transcript gets two results (observed live
+        // 2026-10-04 as a duplicated verdict inside one assistant bubble).
+        // The guard records raw-id sightings as completes arrive;
+        // replayed completions are flagged here and refused at dispatch time
+        // with a synthetic result so tool_use/tool_result pairing stays
+        // balanced without a second execution. Reset alongside toolCalls on
+        // the retry-rollback path (a retried attempt re-streams into an
+        // empty dispatch list; nothing executed in the dead attempt).
+        val toolReplayGuard = com.openminis.app.provider.ToolReplayGuard()
+        val replayRenamedIds = mutableSetOf<String>()
+
         // [T-dedupe-toolcallid 03fbcbfd] Per-turn dedupe of tool_call_id.
         // Some upstream OpenAI-compatible gateways occasionally emit
         // multiple parallel tool_calls with the SAME id but different
@@ -875,11 +892,24 @@ internal suspend fun ChatViewModel.runAgentLoop(
                     }
                 }
                 is LLMStreamChunk.ToolCallComplete -> {
+                    // [T-android-duplicate-toolcall-replay] Record the RAW id
+                    // sighting BEFORE the renamer runs. An identical re-emission
+                    // (same raw id + name + serialized args) is flagged so the
+                    // dispatch loop refuses it; a same-id call with different
+                    // name/args is the documented gateway parallel case and
+                    // still dispatches under its renamed id.
+                    val isReplayedComplete = toolReplayGuard.registerAndCheckReplay(
+                        chunk.id, chunk.name, chunk.args.toString(),
+                    )
                     // [T-dedupe-toolcallid] Rewrite duplicate id so the
                     // persisted tool_calls list, the block lookup, and
                     // the downstream tool-result join all key on the
                     // same value (matches the rename applied at start).
                     val toolCompleteId = dedupeToolCompleteId(chunk.id)
+                    if (isReplayedComplete) {
+                        replayRenamedIds += toolCompleteId
+                        AppLogger.warning(ChatViewModel.TAG_STREAM, "[ToolReplay] duplicate ToolCallComplete raw=${chunk.id} renamed=$toolCompleteId name=${chunk.name} — will refuse at dispatch, no re-execution")
+                    }
                     android.util.Log.d("ToolChain[VM]", "[turn=$turn] ToolCallComplete id=$toolCompleteId name=${chunk.name} args=${chunk.args.toString().take(300)}")
                     toolCalls.add(Triple(toolCompleteId, chunk.name, chunk.args))
                     // [T-android-gemini3-thoughtsig / #179] Stash the Gemini
@@ -1104,6 +1134,12 @@ internal suspend fun ChatViewModel.runAgentLoop(
                     turnThinking.clear()
                     toolCalls.clear()
                     toolCallSignatures.clear()  // [T-android-gemini3-thoughtsig / #179]
+                    // [T-android-duplicate-toolcall-replay] Reset replay
+                    // bookkeeping with the dispatch list: the retried attempt
+                    // re-streams into an empty toolCalls, so raw-id sightings
+                    // from the dead attempt must not refuse the fresh ones.
+                    toolReplayGuard.reset()
+                    replayRenamedIds.clear()
                     // T94 fix 2 + T256: throttle bookkeeping is per-stream
                     // attempt; reset alongside the partial-block rollback so
                     // the next attempt's first delta fires through immediately
@@ -1239,6 +1275,12 @@ internal suspend fun ChatViewModel.runAgentLoop(
                     turnThinking.clear()
                     toolCalls.clear()
                     toolCallSignatures.clear()  // [T-android-gemini3-thoughtsig / #179]
+                    // [T-android-duplicate-toolcall-replay] Reset replay
+                    // bookkeeping with the dispatch list: the retried attempt
+                    // re-streams into an empty toolCalls, so raw-id sightings
+                    // from the dead attempt must not refuse the fresh ones.
+                    toolReplayGuard.reset()
+                    replayRenamedIds.clear()
                     // loop continues — will retry collect with currentProvider
                 } else {
                     // All fallbacks exhausted. Surface the trail of tried
@@ -1603,6 +1645,39 @@ internal suspend fun ChatViewModel.runAgentLoop(
             }
             val argsStr = args.toString()
             val paramsMap = parseToolParams(argsStr)
+            // [T-android-duplicate-toolcall-replay] Refuse a replayed
+            // ToolCallComplete (same raw id + name + serialized args as a call
+            // already dispatched this stream attempt). Executing it again would
+            // run the tool twice and put two results into the transcript; the
+            // refusal synthesizes an error result under the renamed id so
+            // tool_use/tool_result pairing stays balanced. Not recorded in the
+            // loop detector — a transport replay is not model behavior.
+            if (id in replayRenamedIds) {
+                val duplicateMsg = "Error: duplicate tool call ignored. This exact call " +
+                    "(same id, name, and arguments) was already dispatched earlier in this " +
+                    "turn and its result is already available above. The duplicate was not " +
+                    "executed. Continue with the recorded result."
+                AppLogger.warning(ChatViewModel.TAG_STREAM, "[ToolReplay] refused duplicate dispatch id=$id name=$name args=${argsStr.take(200)}")
+                val dupIdx = allToolBlocks.indexOfFirst { it.id == id }
+                if (dupIdx >= 0) {
+                    val elapsedDup = System.currentTimeMillis() - allToolBlocks[dupIdx].startTimeMs
+                    allToolBlocks[dupIdx] = allToolBlocks[dupIdx].copy(
+                        toolStatus = ToolBlockStatus.FAILED,
+                        content = "Duplicate call ignored (already executed)",
+                        durationMs = elapsedDup,
+                    )
+                }
+                resultParts.add(AgentContentPart.ToolResult(
+                    id = id, name = name,
+                    content = duplicateMsg,
+                    isError = true,
+                ))
+                toolInputChunkRings.remove(id)
+                withContext(Dispatchers.Main) {
+                    updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks)
+                }
+                continue
+            }
             // Flip PENDING → RUNNING right before the execute dispatch so the UI
             // (tool pill spinner) shows the exact moment execution begins.
             val preIdx = allToolBlocks.indexOfFirst { it.id == id }

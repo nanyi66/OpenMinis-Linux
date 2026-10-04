@@ -5050,7 +5050,12 @@ class ChatViewModel(
         parts: List<AgentContentPart>,
         targetSessionId: String = realSessionId.ifEmpty { sessionId },
     ): String? {
+        // [T-android-duplicate-toolcall-replay] Belt-and-braces: one row must
+        // never carry two toolResult parts for the same toolUseId — a replay
+        // that slipped past dispatch-time refusal would otherwise duplicate
+        // the persisted payload and re-enter the transcript on reload.
         val results = parts.filterIsInstance<AgentContentPart.ToolResult>()
+            .distinctBy { it.id }
         if (results.isEmpty()) return null
         val partsJson = buildString {
             append("[")
