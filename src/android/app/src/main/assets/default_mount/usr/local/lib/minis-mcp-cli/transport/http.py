@@ -14,6 +14,7 @@ Errors are raised as `MCPError(code, message)`; main.py renders the unified
 import json
 import os
 import re
+import time
 
 try:
     import httpx
@@ -51,24 +52,53 @@ def _expand_headers(headers):
     return out
 
 
-def _parse_response(resp):
+def _parse_sse(text, want_id):
+    """[T-mcp-http-sse-id-match] Extract the JSON-RPC reply for want_id from an
+    SSE body. Per the SSE spec an event's data may span several `data:` lines
+    (joined with \n) and blank lines separate events. The previous parser had
+    two defects: a payload split across data: lines was dropped, and "last
+    data line wins" let a trailing NOTIFICATION from a streaming server
+    shadow the actual reply (an id-less message yields result=None, i.e. an
+    empty tools list that looks like the server has no tools). Match the
+    request id; fall back to the first response-shaped message so a
+    non-conforming id still surfaces its error instead of a parse failure."""
+    candidates = []
+    data_buf = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            if data_buf:
+                candidates.append("\n".join(data_buf))
+                data_buf = []
+            continue
+        if line.startswith("data:"):
+            data_buf.append(line[5:].strip())
+    if data_buf:
+        candidates.append("\n".join(data_buf))
+    fallback = None
+    for payload in candidates:
+        try:
+            msg = json.loads(payload)
+        except ValueError:
+            continue
+        if not isinstance(msg, dict):
+            continue
+        if "result" in msg or "error" in msg:
+            if want_id is None or msg.get("id") == want_id:
+                return msg
+            if fallback is None:
+                fallback = msg
+    if fallback is not None:
+        return fallback
+    raise MCPError("PARSE_ERROR", "no JSON-RPC payload in SSE stream")
+
+
+def _parse_response(resp, want_id=None):
     """Extract the JSON-RPC object from either a JSON body or an SSE stream."""
     ctype = resp.headers.get("content-type", "")
     text = resp.text
     if "text/event-stream" in ctype:
-        # SSE: pull the last `data:` payload that parses as JSON-RPC.
-        result = None
-        for line in text.splitlines():
-            line = line.strip()
-            if line.startswith("data:"):
-                payload = line[len("data:"):].strip()
-                try:
-                    result = json.loads(payload)
-                except ValueError:
-                    continue
-        if result is None:
-            raise MCPError("PARSE_ERROR", "no JSON-RPC payload in SSE stream")
-        return result
+        return _parse_sse(text, want_id)
     try:
         return json.loads(text)
     except ValueError as exc:
@@ -259,14 +289,42 @@ class HTTPTransport:
                 force_refresh=_oauth_retried)
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
-        try:
-            resp = httpx.post(
-                self.url, json=body, headers=headers, timeout=TIMEOUT_SECONDS
-            )
-        except httpx.TimeoutException:
-            raise MCPError("TIMEOUT", "request timed out after %ds" % TIMEOUT_SECONDS)
-        except httpx.HTTPError as exc:
-            raise MCPError("CONNECTION_ERROR", str(exc))
+        # [T-mcp-protocol-version-header] The 2025-06-18 spec requires clients
+        # to declare the negotiated version on every post-initialize request.
+        if self._initialized:
+            headers["MCP-Protocol-Version"] = "2025-06-18"
+        # [T-mcp-http-timeout-phases] A scalar timeout applied to EVERY phase,
+        # so an UNREACHABLE host burned the full 300s budget inside connect()
+        # before any error surfaced. Bound connect/pool at 15s; keep the long
+        # read budget for genuinely slow tool executions.
+        timeout = httpx.Timeout(connect=15.0, read=TIMEOUT_SECONDS,
+                                write=30.0, pool=15.0)
+        resp = None
+        # [T-mcp-http-connect-retry] ONE retry on connect-phase failures only:
+        # nothing was sent, so the retry cannot double-execute a tool call. A
+        # failure after send (read timeout, reset mid-response) is NOT retried
+        # — tools/call may be non-idempotent.
+        for attempt in range(2):
+            try:
+                resp = httpx.post(self.url, json=body, headers=headers,
+                                  timeout=timeout)
+                break
+            except httpx.ConnectTimeout as exc:
+                if attempt == 0:
+                    time.sleep(0.5)
+                    continue
+                raise MCPError("CONNECTION_ERROR",
+                               "could not connect (timeout): %s" % exc)
+            except httpx.ConnectError as exc:
+                if attempt == 0:
+                    time.sleep(0.5)
+                    continue
+                raise MCPError("CONNECTION_ERROR", "could not connect: %s" % exc)
+            except httpx.TimeoutException:
+                raise MCPError("TIMEOUT",
+                               "request timed out after %ds" % TIMEOUT_SECONDS)
+            except httpx.HTTPError as exc:
+                raise MCPError("CONNECTION_ERROR", str(exc))
         # Capture a session id handed back by the server (streamable-HTTP).
         sid = resp.headers.get("mcp-session-id")
         if sid:
@@ -283,7 +341,7 @@ class HTTPTransport:
             )
         if notify:
             return None
-        rpc = _parse_response(resp)
+        rpc = _parse_response(resp, want_id=body.get("id"))
         if isinstance(rpc, dict) and rpc.get("error"):
             err = rpc["error"]
             raise MCPError("MCP_ERROR", err.get("message", json.dumps(err)))
