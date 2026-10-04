@@ -134,7 +134,22 @@ internal suspend fun ChatViewModel.runPlanDiscussion(provider: LLMProvider): Str
                 members = members,
                 tools = tools,
                 executeTool = { name, json ->
-                    executeTool(name, json, "", mutableListOf(), assistantId, "")
+                    // [T-subagent-browser-readonly-actions] Discussion seats
+                    // are PLAN-filtered, so browser_use reaches them — but the
+                    // Runner loop (with the read-only browser gate) is not in
+                    // this path. Deny mutating actions at the seat boundary.
+                    val browserDenial = if (name == "browser_use") {
+                        com.openminis.app.tools.SubAgentKind.readOnlyBrowserDenial(
+                            runCatching { org.json.JSONObject(json).optString("action") }.getOrDefault(""),
+                        )
+                    } else {
+                        null
+                    }
+                    if (browserDenial != null) {
+                        com.openminis.app.tools.ToolExecutionResult(browserDenial, false)
+                    } else {
+                        executeTool(name, json, "", mutableListOf(), assistantId, "")
+                    }
                 },
                 onProgress = { msg ->
                     withContext(Dispatchers.Main) {

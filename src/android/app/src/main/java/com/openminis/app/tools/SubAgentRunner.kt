@@ -214,6 +214,27 @@ object SubAgentRunner {
                         )
                         continue
                     }
+                    // [T-subagent-browser-readonly-actions] browser_use is
+                    // allow-listed for read-only kinds, but its mutating
+                    // actions are not read-only. Same shape as the shell gate.
+                    if (SubAgentKind.isReadOnly(kind) && name == "browser_use") {
+                        val denied = SubAgentKind.readOnlyBrowserDenial(
+                            runCatching { args.optString("action") }.getOrDefault(""),
+                        )
+                        if (denied != null) {
+                            runCatching { onUi(UiEvent.ToolDone(id, name, false, denied)) }
+                            timeline.append("- turn $turn: browser_use (read-only denied)\n")
+                            resultParts.add(
+                                AgentContentPart.ToolResult(
+                                    id = id,
+                                    name = name,
+                                    content = denied,
+                                    isError = true,
+                                ),
+                            )
+                            continue
+                        }
+                    }
                     val argsJson = args.toString()
                     if (SubAgentKind.isReadOnly(kind) && name in setOf("shell_execute", "shell_exec", "env_exec")) {
                         val denied = SubAgentKind.readOnlyShellDenial(

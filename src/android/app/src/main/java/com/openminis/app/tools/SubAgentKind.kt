@@ -104,6 +104,26 @@ object SubAgentKind {
      * through. Quotes, here-docs, and fd dups (`2>&1`) are not writes.
      * `sh -c` / `$(...)` payloads are scanned too, or the wrapper hides both.
      */
+    // [T-subagent-browser-readonly-actions] browser_use is in
+    // READ_ONLY_ALLOW (best web-recon surface) but these ACTIONS mutate remote
+    // pages: click/type submit forms and keystrokes, execute_js runs arbitrary
+    // page JS, set_cookies rewrites session state.
+    private val READONLY_BROWSER_DENY = setOf(
+        "click", "type", "hover", "execute_js", "set_cookies",
+    )
+
+    /** Denial for a read-only kind driving [browser_use]; null when allowed.
+     *  Takes the extracted action string so it stays pure and testable. */
+    fun readOnlyBrowserDenial(action: String): String? {
+        val a = action.trim().lowercase()
+        if (a in READONLY_BROWSER_DENY) {
+            return ("Error: explore/plan browser is read-only. navigate, " +
+                "screenshot, get_text and scroll are fine; '$a' acts on the " +
+                "page and is not.")
+        }
+        return null
+    }
+
     fun readOnlyShellDenial(command: String): String? {
         val trimmed = command.trim()
         if (trimmed.isEmpty()) return null
