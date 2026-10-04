@@ -11,6 +11,10 @@ class OAuthCallbackServer(
     private val fallbackPorts: List<Int> = emptyList(),
     private val expectedPath: String = "/callback",
     private val onCode: (code: String, state: String?) -> Unit,
+    // [T-android-mcp-oauth-timeout] Invoked when the IdP redirects back with
+    // ?error=… (consent denied) so the waiter fails fast instead of hanging.
+    // Optional + default null: the Claude flow keeps its existing behavior.
+    private val onDenied: (() -> Unit)? = null,
 ) {
     companion object {
         private const val TAG = "OAuthCallbackServer"
@@ -97,8 +101,12 @@ class OAuthCallbackServer(
                             writeResponse(socket, 200, html)
                             Log.i(TAG, "OAuth callback accepted: codePresent=${!code.isNullOrEmpty()} statePresent=${!state.isNullOrEmpty()}")
 
+                            val err = params["error"]
                             if (!code.isNullOrEmpty()) {
                                 onCode(code, state)
+                            } else if (!err.isNullOrEmpty()) {
+                                Log.i(TAG, "OAuth callback denied: $err")
+                                onDenied?.invoke()
                                 stop()
                                 return@Thread
                             }

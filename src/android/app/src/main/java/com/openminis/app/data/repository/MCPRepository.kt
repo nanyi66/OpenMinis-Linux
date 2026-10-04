@@ -298,6 +298,8 @@ class MCPRepository(private val context: Context) {
 
     fun delete(id: String) {
         db.execSQL("DELETE FROM mcp_session_overrides WHERE mcp_id=?", arrayOf(id))
+        // Secrets + guest bridge must not outlive the server entry.
+        com.openminis.app.mcp.oauth.MCPOAuthStore.purge(context, id)
         _servers.value = _servers.value.filter { it.id != id }
         save()
         Log.i(TAG, "Deleted MCP server: $id")

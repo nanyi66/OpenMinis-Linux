@@ -82,10 +82,12 @@ object MCPOAuthStore {
     /** Forget issued tokens but keep the client secret (sign out, re-auth later). */
     fun signOut(context: Context, server: String) {
         prefs(context).edit().remove(tokensKey(server)).apply()
+        MCPTokenBridge.remove(context, server)
     }
 
     /** Forget everything for a server — tokens AND client secret (server deleted). */
     fun purge(context: Context, server: String) {
         prefs(context).edit().remove(tokensKey(server)).remove(secretKey(server)).apply()
+        MCPTokenBridge.remove(context, server)
     }
 }

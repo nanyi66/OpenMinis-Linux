@@ -6,7 +6,9 @@ import androidx.browser.customtabs.CustomTabsIntent
 import com.openminis.app.auth.OAuthCallbackServer
 import com.openminis.app.logging.AppLogger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -75,16 +77,21 @@ class MCPOAuthController(private val context: Context) {
             scopes = oauth.scopes,
         )
 
-        return withContext(Dispatchers.IO) {
+        return try {
+        withTimeout(AUTHORIZE_TIMEOUT_MS) {
+        withContext(Dispatchers.IO) {
             callbackServer?.stop()
             callbackServer = null
 
             val callback = try {
                 suspendCancellableCoroutine<Pair<String, String?>?> { cont ->
                     val callbackPath = runCatching { URI(redirect).path }.getOrNull().orEmpty().ifEmpty { "/oauth/callback" }
-                    val srv = OAuthCallbackServer(port, expectedPath = callbackPath) { code, state ->
-                        if (cont.isActive) cont.resume(code to state)
-                    }
+                    val srv = OAuthCallbackServer(
+                        port,
+                        expectedPath = callbackPath,
+                        onCode = { code, state -> if (cont.isActive) cont.resume(code to state) },
+                        onDenied = { if (cont.isActive) cont.resume(null) },
+                    )
                     callbackServer = srv
                     // If the user dismisses the Custom Tab, stop() fires this so
                     // we don't hang until the OS eventually tears the socket down.
@@ -109,12 +116,25 @@ class MCPOAuthController(private val context: Context) {
             } ?: return@withContext Result.Cancelled
 
             val (code, state) = callback
-            if (state != null && state != pkce.state) {
+            // [T-android-mcp-oauth-state-required] RFC 6749 §4.1.2: state MUST
+            // be verified. We always send one, so a callback WITHOUT it is an
+            // anomaly (or a forged loopback hit) — reject, never skip.
+            if (state != pkce.state) {
                 AppLogger.warning(TAG, "[Authorize] '$server' state mismatch")
                 return@withContext Result.Failed("State mismatch in the OAuth callback.")
             }
 
             exchangeCode(server, oauth, redirect, resource, code, pkce.verifier)
+        }
+        }
+        } catch (exc: TimeoutCancellationException) {
+            // [T-android-mcp-oauth-timeout] The docstring promised "up to 5
+            // min" but nothing enforced it — an abandoned authorize (tab
+            // backgrounded, consent never given) hung the coroutine forever.
+            callbackServer?.stop()
+            callbackServer = null
+            AppLogger.warning(TAG, "[Authorize] '$server' timed out")
+            Result.Failed("Authorization timed out — please try again.")
         }
     }
 
@@ -160,6 +180,21 @@ class MCPOAuthController(private val context: Context) {
                         refreshToken = json.optString("refresh_token", "").ifBlank { null },
                         expiresAtMs = expiresAt,
                     ),
+                )
+                // [T-android-mcp-token-bridge] Hand the tokens to the in-guest
+                // CLI; without this the transport bridge the Python side reads
+                // never materializes on Android and every call 401s.
+                MCPTokenBridge.write(
+                    context, server,
+                    tokens = MCPOAuthStore.StoredTokens(
+                        accessToken = access,
+                        refreshToken = json.optString("refresh_token", "").ifBlank { null },
+                        expiresAtMs = expiresAt,
+                    ),
+                    tokenEndpoint = oauth.tokenEndpoint,
+                    clientId = oauth.clientId,
+                    clientSecret = MCPOAuthStore.clientSecret(context, server),
+                    resource = resource,
                 )
                 AppLogger.info(
                     TAG,
@@ -209,6 +244,7 @@ class MCPOAuthController(private val context: Context) {
 
         /** Fixed loopback port for MCP OAuth — distinct from ClaudeOAuthManager's
          *  54545 so a concurrent login never collides. Mirrors iOS 54546. */
+        private const val AUTHORIZE_TIMEOUT_MS = 5 * 60 * 1000L
         const val LOOPBACK_PORT = 54546
         const val DEFAULT_REDIRECT_URI = "http://localhost:$LOOPBACK_PORT/callback"
     }
