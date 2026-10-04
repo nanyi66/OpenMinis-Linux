@@ -23,6 +23,7 @@ import com.openminis.app.provider.VendorMedia
 import com.openminis.app.provider.VendorMediaKind
 import com.openminis.app.provider.applyUserAgentOverride
 import com.openminis.app.provider.safeOptString
+import com.openminis.app.provider.ZenDisguise
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
@@ -220,7 +221,10 @@ internal fun OpenAIProvider.rawStreamMessage(
                 memBefore, serStartNs, failure = null,
             )
         }
-        val request = buildRequest(bodyStr)
+        var request = buildRequest(bodyStr)
+        if (basePath.contains("opencode.ai/zen", ignoreCase = true)) {
+            request = ZenDisguise.applyToBody(request.newBuilder(), bodyStr).build()
+        }
         val headerMap = mutableMapOf<String, String>()
         for (name in request.headers.names()) {
             headerMap[name] = request.headers[name] ?: ""

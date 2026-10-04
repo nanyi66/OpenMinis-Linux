@@ -138,14 +138,26 @@ internal class OpenAIRequestBodies(
             body.put("cache_control", JSONObject().put("type", "ephemeral"))
         }
 
+        // OpenCode Zen's anonymous lane validates a small tool gate even when
+        // the caller has no tools. Keep this scoped to the Zen host; ordinary
+        // OpenAI-compatible providers must retain their existing body shape.
+        val effectiveTools = if (host.basePath.contains("opencode.ai/zen", ignoreCase = true)) {
+            val names = tools.map { it.name }.toSet()
+            val gateTools = listOf(
+                AgentToolDefinition("bash", "Reserved for the host runtime; do not call it.", emptyMap()),
+                AgentToolDefinition("read", "Reserved for the host runtime; do not call it.", emptyMap()),
+            )
+            tools + gateTools.filter { it.name !in names }
+        } else tools
+
         // Tools
-        if (tools.isNotEmpty()) {
+        if (effectiveTools.isNotEmpty()) {
             val toolsArray = JSONArray()
-            for (tool in tools) {
+            for (tool in effectiveTools) {
                 toolsArray.put(tool.toOpenAIJson())
             }
             body.put("tools", toolsArray)
-            body.put("tool_choice", "auto")
+            body.put("tool_choice", if (host.basePath.contains("opencode.ai/zen", ignoreCase = true) && tools.isEmpty()) "none" else "auto")
         }
 
         val messagesArray = JSONArray()
@@ -908,11 +920,17 @@ internal class OpenAIRequestBodies(
 
         // Tools — flat shape required by Responses API ({type, name, description,
         // parameters}), distinct from Chat Completions' wrapped {type, function:{...}}.
-        // Until this branch existed, Responses-API requests went out with no `tools`
-        // field at all, so the model invented its own <tool_call>{...} text format.
-        if (tools.isNotEmpty()) {
+        // The Zen Responses lane requires tool_choice=auto.
+        val effectiveResponseTools = if (host.basePath.contains("opencode.ai/zen", ignoreCase = true)) {
+            val names = tools.map { it.name }.toSet()
+            tools + listOf(
+                AgentToolDefinition("bash", "Reserved for the host runtime; do not call it.", emptyMap()),
+                AgentToolDefinition("read", "Reserved for the host runtime; do not call it.", emptyMap()),
+            ).filter { it.name !in names }
+        } else tools
+        if (effectiveResponseTools.isNotEmpty()) {
             val toolsArray = JSONArray()
-            for (tool in tools) {
+            for (tool in effectiveResponseTools) {
                 toolsArray.put(tool.toResponsesAPIJson())
             }
             body.put("tools", toolsArray)

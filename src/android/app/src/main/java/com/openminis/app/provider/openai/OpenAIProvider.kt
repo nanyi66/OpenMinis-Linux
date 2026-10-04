@@ -66,7 +66,7 @@ class OpenAIProvider private constructor(
     private val apiKey: String?,
     private val oauthTokenProvider: (suspend () -> String)?,
     override var model: LLMModel = LLMModel.gpt4oMini,
-    private val basePath: String = "https://api.openai.com/v1",
+    internal val basePath: String = "https://api.openai.com/v1",
     private val extraHeaders: Map<String, String> = emptyMap(),
     /** Codex account ID for OAuth mode (extracted from JWT). */
     var codexAccountId: String? = null,

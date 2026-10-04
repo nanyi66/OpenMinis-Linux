@@ -255,8 +255,9 @@ class ProviderRepository(private val context: Context) {
             // heal corrupted modality). Mirrors iOS ProviderConfigStore.init.
             try {
                 ensureVoiceTemplateModels()
+                ensureBuiltInZenProvider()
             } catch (e: Exception) {
-                android.util.Log.w("ProviderRepo", "[Voice] ensureVoiceTemplateModels failed: ${e.message}")
+                android.util.Log.w("ProviderRepo", "[BuiltIn] provider reconciliation failed: ${e.message}")
             }
         }
     }
@@ -502,12 +503,64 @@ class ProviderRepository(private val context: Context) {
     }
 
     /**
+     * Adds the bundled OpenCode Zen instance only on a fresh install.
+     *
+     * Upgrade safety: an existing user-created instance wins when its label or
+     * endpoint already identifies Zen; otherwise the built-in gets a unique
+     * deterministic label and ID, so no user-created provider is renamed or
+     * merged accidentally.
+     */
+    private fun ensureBuiltInZenProvider() = synchronized(configLock) {
+        if (!_configLoaded.value) return@synchronized
+        val current = _config.value
+        val endpoint = "https://opencode.ai/zen/v1"
+        // A user-created instance pointing at the same Zen endpoint already
+        // represents this service; do not duplicate or mutate it. A same-label
+        // instance with another endpoint is NOT a conflict: preserve it and use
+        // a deterministic suffix for the bundled provider.
+        if (current.instances.any { isZenInstance(it) }) {
+            return@synchronized
+        }
+
+        val config = workingCopy()
+        val baseLabel = "OpenCode Zen (Free)"
+        val label = if (config.instances.none { it.label == baseLabel }) {
+            baseLabel
+        } else {
+            "$baseLabel · Built-in"
+        }
+        val instance = ProviderInstance(
+            id = "builtin-opencode-zen",
+            label = label,
+            providerType = ProviderType.openAI,
+            credentialType = ProviderCredential.apiKey,
+            customBaseURL = endpoint,
+            appendV1Suffix = false,
+            isEnabled = true,
+        )
+        config.instances.add(instance)
+        saveApiKey(instance.id, "public")
+        val models = listOf(
+            LLMModel("big-pickle", "Big Pickle (Free)", "OpenCode Zen", 262144, 32768, true, inputModalities = listOf("text", "image")),
+            LLMModel("mimo-v2.6-flash-free", "MiMo v2.6 Flash Free", "OpenCode Zen", 128000, 8192, true),
+            LLMModel("ling-3.0-flash-fin-free", "Ling 3.0 Flash Finance Free", "OpenCode Zen", 128000, 8192),
+            LLMModel("nemotron-3-ultra-free", "Nemotron 3 Ultra Free", "OpenCode Zen", 128000, 4096, true),
+        )
+        config.modelEntries.addAll(models.map { ModelEntry(providerInstanceId = instance.id, baseModel = it) })
+        saveConfig(config)
+        android.util.Log.i("ProviderRepo", "[BuiltIn] seeded Zen instance ${instance.id} as '${instance.label}'")
+    }
+
+    /**
      * Whether [instance] points at a third-party OpenAI-compatible host
      * (xAI Grok, vLLM, Ollama, LiteLLM, DeepSeek via OpenAI shim, etc.).
      * For these instances we must never substitute `LLMModel.allOpenAI` as a
      * fallback / seed — those are GPT-only IDs that don't exist upstream.
      * Mirrors iOS `ProviderConfigStore.isThirdPartyOpenAICompat`.
      */
+    private fun isZenInstance(instance: ProviderInstance): Boolean =
+        instance.customBaseURL?.trimEnd('/') == "https://opencode.ai/zen/v1"
+
     private fun isThirdPartyOpenAICompat(instance: ProviderInstance): Boolean {
         if (instance.providerType != ProviderType.openAI) return false
         val custom = instance.customBaseURL?.lowercase() ?: return false
@@ -2163,7 +2216,8 @@ class ProviderRepository(private val context: Context) {
                     // models from the same /v1/models endpoint — only the
                     // completion endpoint differs.
                     ProviderType.openAI, ProviderType.openAIResponses ->
-                        OpenAIModelsApi.fetchModels(apiKey, baseURL, context = context, forceRefresh = liveForce, customUserAgent = instance.customUserAgent, cacheScope = instance.id)
+                        OpenAIModelsApi.fetchModels(apiKey, baseURL, context = context, forceRefresh = liveForce, customUserAgent = if (isZenInstance(instance)) com.openminis.app.provider.ZenDisguise.userAgent() else instance.customUserAgent, cacheScope = instance.id)
+                            .let { models -> if (isZenInstance(instance)) models.filter { it.id == "big-pickle" || it.id.contains("-free", ignoreCase = true) } else models }
                     ProviderType.openRouter -> OpenRouterModelsApi.fetchModels(apiKey, context = context, forceRefresh = liveForce, cacheScope = instance.id)
                     // [T-provider-dynamic-catalog-reconcile] xAI: fetch the live
                     // catalog, fall back to the built-in list.
