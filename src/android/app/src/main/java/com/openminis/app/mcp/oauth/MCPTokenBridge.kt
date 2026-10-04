@@ -47,7 +47,19 @@ object MCPTokenBridge {
         }
         val payload = JSONObject().apply {
             put("access_token", tokens.accessToken)
-            if (!tokens.refreshToken.isNullOrBlank()) put("refresh_token", tokens.refreshToken)
+            var refreshToken = tokens.refreshToken
+            if (refreshToken.isNullOrBlank()) {
+                // [T-android-mcp-token-bridge-merge] The CLI rotates the refresh
+                // token on every refresh and rewrites the bridge; this write may
+                // carry tokens WITHOUT one (e.g. a token-only update). Never
+                // downgrade: keep the bridge's existing refresh token.
+                val existing = runCatching {
+                    JSONObject(File(oauthDir(context), "$server.json").readText())
+                }.getOrNull()
+                existing?.optString("refresh_token", "")?.takeIf { it.isNotBlank() }
+                    ?.let { refreshToken = it }
+            }
+            if (!refreshToken.isNullOrBlank()) put("refresh_token", refreshToken)
             if (tokens.expiresAtMs > 0) put("expires_at", tokens.expiresAtMs / 1000)
             put("token_endpoint", tokenEndpoint)
             put("client_id", clientId)

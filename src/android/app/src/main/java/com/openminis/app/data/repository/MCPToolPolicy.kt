@@ -30,12 +30,17 @@ object MCPToolPolicy {
         write(context, map)
     }
 
-    /** Immediate host-side rejection for a parsed `minis-mcp-cli call`. */
+    /** Immediate host-side rejection for parsed `minis-mcp-cli call` commands.
+     *  [T-mcp-policy-chained-bypass] Scans EVERY invocation in the command — a
+     *  chained `call a t1 && call b t2` used to be judged on the first alone,
+     *  letting a disabled t2 through the gate. */
     fun blockedMessage(context: Context, command: String): String? {
-        val call = parse(command) ?: return null
-        if (call.subcommand != "call" || call.tool.isNullOrBlank()) return null
-        if (!isDisabled(context, call.server, call.tool)) return null
-        return "MCP tool \"${call.tool}\" on ${call.server} is disabled in Settings."
+        for (call in parseAll(command)) {
+            if (call.subcommand != "call" || call.tool.isNullOrBlank()) continue
+            if (!isDisabled(context, call.server, call.tool)) continue
+            return "MCP tool \"${call.tool}\" on ${call.server} is disabled in Settings."
+        }
+        return null
     }
 
     fun filterToolsOutput(context: Context, command: String, output: String): String {
@@ -67,23 +72,30 @@ object MCPToolPolicy {
         }
     }
 
-    fun parse(command: String): Invocation? {
+    fun parse(command: String): Invocation? = parseAll(command).firstOrNull()
+
+    /** Every minis-mcp-cli invocation found in [command], in order. */
+    fun parseAll(command: String): List<Invocation> {
         val tokens = tokenize(command)
+        val out = mutableListOf<Invocation>()
         for (i in tokens.indices) {
             val token = tokens[i]
             if (token != "minis-mcp-cli" && !token.endsWith("/minis-mcp-cli")) continue
             var j = i + 1
             j = skipFlags(tokens, j)
-            val sub = tokens.getOrNull(j) ?: return null
+            val sub = tokens.getOrNull(j) ?: break
             if (sub != "call" && sub != "tools") continue
             j = skipFlags(tokens, j + 1)
-            val server = tokens.getOrNull(j)?.trim('"', '\'') ?: return null
-            if (sub == "tools") return Invocation(sub, server, null)
+            val server = tokens.getOrNull(j)?.trim('"', '\'') ?: break
+            if (sub == "tools") {
+                out.add(Invocation(sub, server, null))
+                continue
+            }
             j = skipFlags(tokens, j + 1)
-            val tool = tokens.getOrNull(j)?.trim('"', '\'') ?: return null
-            return Invocation(sub, server, tool)
+            val tool = tokens.getOrNull(j)?.trim('"', '\'') ?: break
+            out.add(Invocation(sub, server, tool))
         }
-        return null
+        return out
     }
 
     private fun skipFlags(tokens: List<String>, start: Int): Int {
@@ -152,6 +164,9 @@ object MCPToolPolicy {
             tools.sorted().forEach { arr.put(it) }
             obj.put(server, arr)
         }
-        file.writeText(obj.toString())
+        // [T-mcp-policy-atomic-write] The guest daemon reads this file on every
+        // call; a torn write lands in its catch-all and enables EVERY tool for
+        // that window. Temp+rename, same discipline as servers.json.
+        writeTextAtomic(file, obj.toString())
     }
 }
