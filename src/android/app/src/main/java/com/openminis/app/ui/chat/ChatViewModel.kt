@@ -1653,7 +1653,11 @@ class ChatViewModel(
      */
     internal fun estimateAgentHistoryTokens(): Int {
         var total = 0L
-        for (msg in agentHistory) {
+        // Effective, not raw: with a compact marker in play the next request
+        // carries the summary + kept tail, not the full history. Feeding the
+        // raw size into the send-time / in-loop gates made every post-compact
+        // check look over-threshold.
+        for (msg in effectiveAgentHistoryUncounted()) {
             total += estimateMixedTokens(msg.content)
             for (part in msg.contentParts) {
                 when (part) {
@@ -2670,7 +2674,9 @@ class ChatViewModel(
     /**
      * Recompute contextUsage for the session-menu ring.
      *
-     * [T-android-context-ring-zero] The char estimate walks `agentHistory`,
+     * [T-android-context-ring-zero] The char estimate walks the effective
+     * (compacted) history — with a marker in play the raw list is not what
+     * the next request carries ([T-android-compact-stale-usage]).
      * which for a long session is TAIL-PAGED (loadSessionTail) — a re-entered
      * session showed ~0 tokens even while the provider reported 23939/24688.
      * Prefer the REAL provider-reported context size from the last usage
@@ -2679,7 +2685,7 @@ class ChatViewModel(
     fun refreshContextUsage() {
         val reported = _lastTurnContextTokens.value
         var usedChars = 0L
-        for (msg in agentHistory) {
+        for (msg in effectiveAgentHistoryUncounted()) {
             for (part in msg.contentParts) {
                 when (part) {
                     is AgentContentPart.Text -> usedChars += part.text.length

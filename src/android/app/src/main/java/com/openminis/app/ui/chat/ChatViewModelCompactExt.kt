@@ -291,7 +291,18 @@ private inline fun ChatViewModel.compactAllImpl(
             _cachedLatestMarker = marker
             // Fresh anchor sits inside the window by construction.
             _compactMarkerDetached = false
+            // [T-android-compact-stale-usage] Same stale-reading hazard the
+            // in-loop path fixed ([T-android-auto-compact-inloop]): the last
+            // usage chunk describes the PRE-compaction payload, and
+            // refreshContextUsage() prefers it over the estimate. Zero it so
+            // the next reading comes from the effective-history estimate, and
+            // refresh now — the usage sheet / context ring otherwise keep
+            // reporting the pre-compact size until some future turn completes
+            // (observed on device: sheet showed 659.5K after a compact that
+            // took the next-turn payload to ~115K).
+            _lastTurnContextTokens.value = 0
             withContext(Dispatchers.Main) {
+                refreshContextUsage()
                 // Gray out everything in the compacted range; the kept
                 // tail (last N user turns + tool/assistant follow-ups)
                 // stays full opacity. Determined by walking _messages

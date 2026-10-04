@@ -60,6 +60,10 @@ fun TokenUsageSheet(
     val lastCacheHitRate by viewModel.lastCacheHitRate.collectAsState()
 
     LaunchedEffect(Unit) {
+        // Recompute the context rows on open: contextUsage is a snapshot that
+        // otherwise only updates at turn boundaries, so the sheet could show a
+        // pre-compaction reading ([T-android-compact-stale-usage]).
+        viewModel.refreshContextUsage()
         stats = viewModel.loadSessionTokenStats()
     }
 
