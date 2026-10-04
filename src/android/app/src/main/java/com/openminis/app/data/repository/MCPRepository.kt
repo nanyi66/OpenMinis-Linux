@@ -174,7 +174,13 @@ class MCPRepository(private val context: Context) {
         }
         val root = JSONObject().put("mcpServers", mcpServers)
         try {
-            serversFile.writeText(root.toString(2))
+            // [T-mcp-servers-json-atomic-write] servers.json has CONCURRENT
+            // readers: the in-guest minis-mcp-cli daemon polls it for config
+            // changes and the file browser can open it. A torn write here
+            // reads back as invalid JSON and silently empties every surface
+            // (the CLI then fails with "server not found"). Temp+rename, same
+            // discipline MemoryRepository.applyUser uses for GLOBAL.md.
+            writeTextAtomic(serversFile, root.toString(2))
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write servers.json: ${e.message}")
         }
