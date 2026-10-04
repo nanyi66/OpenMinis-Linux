@@ -10,6 +10,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.openminis.app.R
 
 /**
  * [T-android-auto-compact-inloop] Compact the session.
@@ -51,7 +52,7 @@ private inline fun ChatViewModel.compactAllImpl(
     if (_isStreaming.value && !allowDuringProcessing) {
         AppLogger.info(ChatViewModel.TAG, "[Compact] aborted: stream in progress")
         appendSystemInfo(
-            text = "Cannot compact while a turn is in progress. Stop the current response first.",
+            text = context.getString(R.string.vm_compact_in_progress_blocked),
             iconKind = "compact",
         )
         return
@@ -59,7 +60,7 @@ private inline fun ChatViewModel.compactAllImpl(
     if (_isCompacting.value) {
         AppLogger.info(ChatViewModel.TAG, "[Compact] aborted: another compact already in flight")
         appendSystemInfo(
-            text = "A compact is already in progress. Please wait for it to finish.",
+            text = context.getString(R.string.vm_compact_already_running),
             iconKind = "compact",
         )
         return
@@ -372,9 +373,7 @@ private inline fun ChatViewModel.compactAllImpl(
             Log.w(ChatViewModel.TAG, "[Compact] timed out after ${elapsed}s ($calls model call(s) issued)")
             withContext(Dispatchers.Main) {
                 appendSystemInfo(
-                    text = "Compaction timed out after ${elapsed}s " +
-                        "($calls model call(s) attempted). The model may be slow or " +
-                        "rate-limited — you can try compacting again.",
+                    text = context.getString(R.string.vm_compaction_timed_out, elapsed, calls),
                     iconKind = "compact",
                 )
             }
@@ -394,7 +393,7 @@ private inline fun ChatViewModel.compactAllImpl(
             Log.w(ChatViewModel.TAG, "Compact failed", e)
             withContext(Dispatchers.Main) {
                 appendSystemInfo(
-                    text = "Compaction failed: ${e.message ?: e.javaClass.simpleName}",
+                    text = context.getString(R.string.vm_compaction_failed, e.message ?: e.javaClass.simpleName),
                     iconKind = "compact",
                 )
             }

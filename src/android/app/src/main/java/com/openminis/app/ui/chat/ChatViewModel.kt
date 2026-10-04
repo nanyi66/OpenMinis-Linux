@@ -2831,7 +2831,14 @@ class ChatViewModel(
             chatRepository.dao.updateMemoryEnabled(sid, if (newValue) 1 else 0)
         }
         appendSystemInfo(
-            text = "Memory writes ${if (newValue) "enabled" else "disabled"}. Reads are unaffected.",
+            text = context.getString(
+                R.string.vm_memory_writes_toggled,
+                if (newValue) {
+                    context.getString(R.string.vm_state_enabled)
+                } else {
+                    context.getString(R.string.vm_state_disabled)
+                },
+            ),
             iconKind = "memory",
         )
     }
@@ -2840,7 +2847,7 @@ class ChatViewModel(
     internal fun toggleThinking() {
         if (!currentModelSupportsReasoning) {
             appendSystemInfo(
-                text = "The current model does not support deep thinking.",
+                text = context.getString(R.string.vm_thinking_unsupported),
                 iconKind = "thinking",
             )
             return
@@ -2849,7 +2856,7 @@ class ChatViewModel(
         _thinkingLevel.value = newLevel
         persistThinkingOverride(newLevel)
         appendSystemInfo(
-            text = "Thinking set to ${newLevel.displayName.lowercase()}.",
+            text = context.getString(R.string.vm_thinking_set_to, newLevel.displayName.lowercase()),
             iconKind = "thinking",
         )
     }

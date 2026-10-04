@@ -429,7 +429,7 @@ fun ProviderDetailScreen(
         if (instance.supportsImageEndpointSetting) {
             val mode = instance.imageEndpointMode
             SettingsSection(
-                header = "Image Generation",
+                header = stringResource(R.string.provider_image_gen_header),
                 footer = when (mode) {
                     com.openminis.app.data.model.ImageEndpointMode.auto ->
                         if (instance.imageEndpointResolved != null) {

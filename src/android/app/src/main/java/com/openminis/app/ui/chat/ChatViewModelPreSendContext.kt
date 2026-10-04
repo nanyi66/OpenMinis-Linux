@@ -3,6 +3,7 @@ package com.openminis.app.ui.chat
 import com.openminis.app.data.ContextPolicy
 import com.openminis.app.logging.AppLogger
 import com.openminis.app.ui.chat.ChatViewModel.PreSendContextAction
+import com.openminis.app.R
 
 /**
  * Consult [ContextPolicy] before sending. Returns true to proceed. The
@@ -49,7 +50,7 @@ internal fun ChatViewModel.checkContextBeforeSend(): PreSendContextAction {
         // the user could still see, which reads as data loss.)
         ContextPolicy.CheckResult.EXHAUSTED -> {
             appendSystemInfo(
-                text = "Context is near the model's limit ($tokens / $window tokens). Start a new chat or /compact to continue reliably.",
+                text = context.getString(R.string.vm_context_near_limit, tokens, window),
                 iconKind = "compact",
             )
             PreSendContextAction.PROCEED

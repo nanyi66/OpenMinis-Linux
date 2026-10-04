@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.openminis.app.R
 
 /**
  * @param skipContextCheck set by the pre-send context dialog's own actions,
@@ -57,7 +58,7 @@ internal fun ChatViewModel.sendMessage(
     if (!internalGoalRun && trimmed.isBlank() && _attachments.value.isEmpty()) return
     if (_isCompacting.value) {
         appendSystemInfo(
-            text = "Wait for the current compact to finish before sending.",
+            text = context.getString(R.string.vm_wait_compact_before_send),
             iconKind = "compact",
         )
         return

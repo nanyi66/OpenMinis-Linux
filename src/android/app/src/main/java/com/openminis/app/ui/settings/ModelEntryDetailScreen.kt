@@ -225,8 +225,12 @@ fun ModelEntryDetailScreen(
             footer = stringResource(R.string.modeldetail_context_retry_footer),
         ) {
             SettingsSwitchRow(
-                title = "Follow global auto-compact setting",
-                subtitle = if (autoCompactInherited) "Using the global setting" else "Model-specific setting",
+                title = stringResource(R.string.modeldetail_follow_global_auto_compact),
+                subtitle = if (autoCompactInherited) {
+                    stringResource(R.string.modeldetail_auto_compact_state_global)
+                } else {
+                    stringResource(R.string.modeldetail_auto_compact_state_specific)
+                },
                 checked = autoCompactInherited,
                 onCheckedChange = { inherit ->
                     if (inherit) autoCompactOn = globalAutoCompactOn
@@ -240,8 +244,12 @@ fun ModelEntryDetailScreen(
                 onCheckedChange = { autoCompactOn = it },
             )
             SettingsSwitchRow(
-                title = "Follow global compact threshold",
-                subtitle = if (compactPercentInherited) "Using the global threshold" else "Model-specific threshold",
+                title = stringResource(R.string.modeldetail_follow_global_compact_threshold),
+                subtitle = if (compactPercentInherited) {
+                    stringResource(R.string.modeldetail_compact_threshold_state_global)
+                } else {
+                    stringResource(R.string.modeldetail_compact_threshold_state_specific)
+                },
                 checked = compactPercentInherited,
                 onCheckedChange = { inherit ->
                     if (inherit) compactPercentText = globalCompactPercent.toString()

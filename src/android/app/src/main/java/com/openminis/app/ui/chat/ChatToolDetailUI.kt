@@ -609,7 +609,7 @@ internal fun ToolDetailSheet(
                                     ) {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             Text(
-                                                text = "Edited",
+                                                text = stringResource(R.string.chat_tool_edited),
                                                 fontSize = 13.sp,
                                                 fontWeight = FontWeight.SemiBold,
                                                 color = ChatColors.primaryText,
@@ -844,7 +844,7 @@ internal fun ToolDetailSheet(
                                         )
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(
-                                            text = "Result",
+                                            text = stringResource(R.string.chat_tool_result_label),
                                             fontSize = 13.sp,
                                             fontWeight = FontWeight.Medium,
                                             color = ChatColors.secondaryText,
@@ -1356,7 +1356,7 @@ private fun LazyRevealToolText(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "Load more ($nextLines lines)",
+                    text = stringResource(R.string.chat_tool_load_more, nextLines),
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
                     color = color.copy(alpha = 0.9f),
@@ -1365,7 +1365,7 @@ private fun LazyRevealToolText(
                     },
                 )
                 Text(
-                    text = "Load all (~$remainingLines)",
+                    text = stringResource(R.string.chat_tool_load_all, remainingLines),
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
                     color = color.copy(alpha = 0.9f),

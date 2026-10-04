@@ -3,6 +3,7 @@ package com.openminis.app.ui.chat
 import com.openminis.app.data.ContextPolicy
 import com.openminis.app.logging.AppLogger
 import com.openminis.app.ui.chat.ChatViewModel.InLoopContextAction
+import com.openminis.app.R
 
 /**
  * [T-android-auto-compact-inloop] Max in-loop compactions per runAgentLoop.
@@ -53,7 +54,7 @@ internal suspend fun ChatViewModel.inLoopContextCheck(compactionsSoFar: Int): In
                     "(autoCompactPref=${com.openminis.app.data.AutoCompactPrefs.isEnabled()}, not a gate here)",
             )
             appendSystemInfo(
-                text = "Context is filling up ($tokens / $window tokens) — compacting to continue.",
+                text = context.getString(R.string.vm_context_filling_compacting, tokens, window),
                 iconKind = "compact",
             )
             val ok = awaitCompaction()

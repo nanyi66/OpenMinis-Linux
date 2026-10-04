@@ -417,8 +417,7 @@ internal suspend fun ChatViewModel.runAgentLoop(
                 // are not in scope. Everything from previous turns was
                 // already persisted by those turns.
                 appendSystemInfo(
-                    text = "Context is full and could not be reduced further. " +
-                        "Tap Continue to resume, or start a new chat.",
+                    text = context.getString(R.string.vm_context_full_unreduced),
                     iconKind = "compact",
                 )
                 // [T-android-group-pause-badge-restamp] A LIVE interruption just

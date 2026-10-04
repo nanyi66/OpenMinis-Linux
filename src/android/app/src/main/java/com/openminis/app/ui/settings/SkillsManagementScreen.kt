@@ -853,7 +853,7 @@ fun SkillDetailScreen(
             val preview = previewLines.joinToString("\n") + if (hasMore) "\n…" else ""
 
             if (preview.isNotEmpty()) {
-                DetailSection(header = "Description") {
+                DetailSection(header = stringResource(R.string.skills_section_description)) {
                     Column(modifier = Modifier.padding(14.dp)) {
                         MarkdownText(
                             markdown = preview,
@@ -872,7 +872,7 @@ fun SkillDetailScreen(
                 skillRepository.listSkillFiles(skill.id)
                     .ifEmpty { listOf("SKILL.md") }
             }
-            DetailSection(header = "Files") {
+            DetailSection(header = stringResource(R.string.skills_section_files)) {
                 skillFiles.forEachIndexed { index, relativePath ->
                     if (index > 0) DetailDivider()
                     DetailRow(clickable = true, onClick = { onFileClick(skill.id, relativePath) }) {

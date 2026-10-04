@@ -38,6 +38,7 @@ import com.openminis.app.R
 import com.openminis.app.data.model.ProviderInstance
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.provider.thinking.ThinkingRule
+import androidx.compose.ui.platform.LocalContext
 
 /**
  * [T-android-thinking-rules-phase2 §3 / parity with iOS ThinkingRulesSection.swift]
@@ -160,6 +161,7 @@ fun ThinkingRulesSection(
             showDivider = defaultsExpanded || customRules.isNotEmpty(),
         )
         if (defaultsExpanded) {
+            val context = LocalContext.current
             builtIns.forEachIndexed { idx, rule ->
                 ThinkingRuleRow(
                     title = rule.label,
@@ -171,7 +173,7 @@ fun ThinkingRulesSection(
                             existingId = null,
                             seed = rule.copy(
                                 kind = ThinkingRule.Kind.CUSTOM,
-                                label = "Copy of ${rule.label}",
+                                label = context.getString(R.string.thinking_rules_copy_prefix, rule.label),
                             ),
                             isNew = true,
                         )
