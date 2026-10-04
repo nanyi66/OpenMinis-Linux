@@ -33,13 +33,23 @@ object UiActionTool {
             "direction" to AgentToolParam("string", "up or down (for scroll)."),
             "package_name" to AgentToolParam("string", "Android package to launch (for open_app)."),
             "url" to AgentToolParam("string", "Intent URL (for open_url, e.g. https://…, tel:, geo:, market:)."),
+            "window_token" to AgentToolParam(
+                "string",
+                "Optional window token from the last ui_read / ui dump. When present, the coordinate gesture is " +
+                    "refused if the foreground screen changed since that snapshot — coordinates are validated against " +
+                    "window consistency only, so this stays usable on video / live streams where node ids churn.",
+            ),
         ),
         required = listOf("tool_title", "action"),
         propertyOrdering = listOf(
             "tool_title", "action", "x", "y", "x2", "y2", "text",
-            "direction", "package_name", "url",
+            "direction", "package_name", "url", "window_token",
         ),
     )
+
+    /** `--window <token>` suffix for coordinate gestures; empty when absent. */
+    private fun windowFlag(obj: JSONObject): String =
+        obj.optString("window_token").takeIf { it.isNotBlank() }?.let { " --window '$it'" } ?: ""
 
     fun execute(argsJson: String): ToolExecutionResult {
         val obj = runCatching { JSONObject(argsJson) }.getOrElse {
@@ -53,17 +63,19 @@ object UiActionTool {
         }
 
         val cmd: String = when (action) {
-            "tap" -> "android-a11y-cli tap ${num("x")} ${num("y")}"
-            "long_press" -> "android-a11y-cli long-press ${num("x")} ${num("y")}"
+            "tap" -> "android-a11y-cli tap ${num("x")} ${num("y")}${windowFlag(obj)}"
+            "long_press" -> "android-a11y-cli long-press ${num("x")} ${num("y")}${windowFlag(obj)}"
             "type" -> "android-a11y-cli type " + "'" + obj.optString("text").replace("'", "'\\''") + "'"
-            "swipe" -> "android-a11y-cli swipe ${num("x")} ${num("y")} ${num("x2")} ${num("y2")}"
-            "scroll" -> "android-a11y-cli scroll ${obj.optString("direction", "down")}"
+            "swipe" -> "android-a11y-cli swipe ${num("x")} ${num("y")} ${num("x2")} ${num("y2")}${windowFlag(obj)}"
+            "scroll" -> "android-a11y-cli scroll ${obj.optString("direction", "down")}${windowFlag(obj)}"
             "back" -> "android-a11y-cli back"
             "open_app" -> "android-shizuku-cli launch " + "'" + obj.optString("package_name").replace("'", "'\\''") + "'"
             "open_url" -> "android-open " + "'" + obj.optString("url").replace("'", "'\\''") + "'"
             else -> return ToolExecutionResult(
                 "Error: unknown action '$action' (支持: tap/type/swipe/scroll/back/open_app/open_url/long_press)",
                 false,
+                errorCode = com.openminis.app.tools.ToolErrorCode.INVALID_ARGUMENTS,
+                recoveryHint = "Choose one of: tap, type, swipe, scroll, back, open_app, open_url, long_press.",
                 toolTitle = toolTitle,
             )
         }
@@ -82,7 +94,13 @@ object UiActionTool {
                 .start()
             val out = process.inputStream.bufferedReader().readText()
             process.waitFor()
-            ToolExecutionResult(out.trim().ifBlank { "(无输出)" }, process.exitValue() == 0, toolTitle = toolTitle)
+            val trimmed = out.trim().ifBlank { "(无输出)" }
+            val code = when {
+                trimmed.contains("WINDOW_CHANGED") -> com.openminis.app.tools.ToolErrorCode.STALE_OBSERVATION
+                trimmed.contains("SERVICE_NOT_RUNNING") -> com.openminis.app.tools.ToolErrorCode.PERMISSION_DENIED
+                else -> null
+            }
+            ToolExecutionResult(trimmed, process.exitValue() == 0, errorCode = code, toolTitle = toolTitle)
         }.getOrElse {
             ToolExecutionResult("Error: ${it.message}", false, toolTitle = toolTitle)
         }

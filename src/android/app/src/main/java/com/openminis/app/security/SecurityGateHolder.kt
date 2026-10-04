@@ -127,6 +127,8 @@ object SecurityGateHolder {
                 ToolExecutionResult(
                     "SecurityGate denied before start (exit 126): ${decision.reason}. Command was not started.",
                     false,
+                    errorCode = com.openminis.app.tools.ToolErrorCode.PERMISSION_DENIED,
+                    recoveryHint = "The permission rule for $canonical was denied. Ask the user to allow it in Settings → Permissions, or continue without this tool.",
                     toolTitle = canonical,
                 )
             }
@@ -164,6 +166,8 @@ object SecurityGateHolder {
                     ToolExecutionResult(
                         verdict,
                         false,
+                        errorCode = com.openminis.app.tools.ToolErrorCode.PERMISSION_DENIED,
+                        recoveryHint = "The user deliberately rejected this call. Do not retry the same arguments; continue differently or ask what they want.",
                         toolTitle = canonical,
                     )
                 } else {

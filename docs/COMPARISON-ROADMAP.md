@@ -29,6 +29,13 @@
 | 国内镜像 | 国内使用场景 | SDK / 下载镜像 |
 | 滚动预发布 APK | 自身 CI | `android-latest`；tag `v*` 出正式版说明 |
 | 原生进化层 LEARNED.md | metano 闭环 | 1.25：提案审批、Be-ACTIVE、闲时收割、技能补丁、信念衰减/周反思/场景注入；默认关。见 [METANO-EVOLUTION.md](METANO-EVOLUTION.md) |
+| 工具按需加载 `find_tools` | Muse 长尾工具调度 | 主循环只常驻核心工具集；模型按需检索并启用长尾工具，压缩上下文。`FindTools` 关键词打分 + 每会话启用集 + `UNKNOWN_TOOL` 指引回退 |
+| 流式断流自动续传 | 断流保活思路 | `streamStallWatchdog` 一阶段超时 → 二阶段静默标记 `stalledAfterFirstEvent`；重试携带 `<stall-resume>` 尾部续写指令，不再从头重生成 |
+| 结构化工具错误 payload | 错误码统一诉求 | `ToolErrorCode` 枚举 + `recoveryHint` 提示文案；权限拒绝 `PERMISSION_DENIED`、窗口过期 `STALE_OBSERVATION`、未知工具 `UNKNOWN_TOOL` 等全链路接入 |
+| 上下文工程（冻头动尾 + 缓存统计） | 长上下文管理 | 稳定前缀 `systemPromptStablePrefixLen` + 动态尾；`TokenUsageSheet` 实时缓存命中率、`UsageStatsScreen` 按模型统计；压缩=归档不删历史（按日归档 + spill） |
+| GUI 坐标手势窗口校验 | kelivo 窗口一致性 | `--window <token>` 校验 `treeSignature`，窗口变化报 `WINDOW_CHANGED`/`STALE_OBSERVATION`；坐标手势（点按/滑动/缩放/路径）均可用于视频/直播画面 |
+| 记忆检索双因子 | Muse SQLite FTS5 + 召回加权 | 关键词密度 + 时近衰减 + 召回次数加权；召回次数 JSON sidecar 持久化，重启不丢；`scoreDetail` 暴露打分构成 |
+| 群聊思维导图导入组织结构 | shiyi 组织结构生成 | `MindMapTeamImport` 解析 Mermaid `mindmap` / 缩进树 → 团队/子单元/角色职责；`CollabRoles.importTeamFromMindMap` 落成自定义角色卡，降低多 Agent 配置门槛 |
 
 ---
 

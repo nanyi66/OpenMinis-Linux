@@ -36,6 +36,24 @@ internal suspend fun ChatViewModel.executeTool(
     if (gated != null) return gated
     val toolTitle = try { JSONObject(argsJson).optString("tool_title", canonical) } catch (_: Exception) { canonical }
 
+    // [T-find-tools] On-demand tool discovery: resolve the query against the
+    // full registry and enable matches for subsequent turns in this session.
+    if (canonical == com.openminis.app.tools.FindTools.NAME) {
+        val args = runCatching { JSONObject(argsJson) }.getOrNull() ?: JSONObject()
+        val query = args.optString("query", "")
+        if (query.isBlank()) {
+            return ToolExecutionResult(
+                "find_tools requires a non-empty query.",
+                false,
+                errorCode = com.openminis.app.tools.ToolErrorCode.INVALID_ARGUMENTS,
+                recoveryHint = "Provide a capability keyword such as calendar, image, or cron.",
+                toolTitle = com.openminis.app.tools.FindTools.NAME,
+            )
+        }
+        val limit = args.optInt("limit", 8)
+        return findAndEnableTools(query, limit)
+    }
+
     val result = when (canonical) {
         FileReadTool.NAME -> {
             val result = FileReadTool.execute(argsJson, activeSessionId, context)
@@ -182,7 +200,12 @@ internal suspend fun ChatViewModel.executeTool(
         else -> if (com.openminis.app.plugins.OnlineApiTool.isOnline(name)) {
             com.openminis.app.plugins.OnlineApiTool.execute(name, argsJson, context)
         } else {
-            ToolExecutionResult("Unknown tool: $name", false)
+            ToolExecutionResult(
+                "Unknown tool: $name",
+                false,
+                errorCode = com.openminis.app.tools.ToolErrorCode.UNKNOWN_TOOL,
+                recoveryHint = "Use find_tools to discover which tools are available for this task.",
+            )
         }
     }
     if (!result.success) {

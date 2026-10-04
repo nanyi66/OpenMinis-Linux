@@ -29,7 +29,12 @@ object AgentTools {
         memoryEnabled: Boolean = true,
         subAgentEnabled: Boolean = false,
         codeGraphEnabled: Boolean = false,
-    ): List<AgentToolDefinition> = buildList {
+        /** When false, expose only the core set plus [find_tools]. */
+        includeLongTail: Boolean = true,
+        /** Long-tail tools enabled by a prior find_tools call. */
+        enabledToolNames: Set<String> = emptySet(),
+    ): List<AgentToolDefinition> {
+        val all = buildList {
         add(shellExecuteDefinition())
         add(FileReadTool.definition())
         add(FileWriteTool.definition())
@@ -80,6 +85,36 @@ object AgentTools {
         if (subAgentEnabled) {
             add(runSubAgentDefinition())
         }
+        }
+        // [T-find-tools] With long-tail loading, the main session schema starts
+        // with the core set plus find_tools; everything else is enabled on
+        // demand. Gated tools (memory / code_graph / sub-agent dispatch) stay
+        // present whenever their gate is on so existing injected prompts still
+        // resolve. Full mode (sub-agents / group chat) keeps the historical
+        // all-tools schema unchanged.
+        if (includeLongTail) return all
+        val alwaysOn = buildSet {
+            addAll(
+                listOf(
+                    "shell_execute", "file_read", "file_write", "file_edit", "multi_edit",
+                    "list_dir", "grep", "glob", "browser_use", "web_search", "web_fetch",
+                    "ui_read", "ui_action", "read_image", "ask_user_question", "update_goal",
+                ),
+            )
+            if (memoryEnabled) {
+                add(memoryWriteDefinition().name)
+                add(memoryGetDefinition().name)
+            }
+            if (codeGraphEnabled) add(CodeGraphTool.NAME)
+            if (subAgentEnabled) {
+                add(SubAgentKind.SPAWN_AGENT)
+                add(SubAgentKind.RUN_SUBAGENT)
+                add(WolfpackTool.NAME)
+                add(DispatchAgentsTool.NAME)
+            }
+        }
+        return (all.filter { it.name in alwaysOn || it.name in enabledToolNames } + FindTools.definition())
+            .distinctBy { it.name }
     }
 
     /**

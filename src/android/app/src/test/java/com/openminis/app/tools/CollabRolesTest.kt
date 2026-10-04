@@ -51,4 +51,56 @@ class CollabRolesTest {
         assertFalse("cronjob" in names)
         assertFalse("spawn_agent" in names)
     }
+
+    @Test
+    fun importTeamFromMindMapGeneratesCustomRoles() {
+        val roles = CollabRoles.importTeamFromMindMap(
+            """
+            mindmap
+              root((产品团队))
+                PM[产品经理]
+                QA[测试工程师]
+                Intern[实习生]
+            """.trimIndent(),
+        )
+        assertEquals(3, roles.size)
+        val pm = roles.first { it.name == "产品经理" }
+        assertFalse("imported roles are customs, not builtins", pm.builtin)
+        assertNotNull("builtin reuse: 产品经理 keeps its catalog prompt", pm.prompt)
+        assertTrue("产品经理 is a writer role", pm.tools.contains("file_write"))
+        val qa = roles.first { it.name == "测试工程师" }
+        assertTrue("测试工程师 gets builder tools", qa.tools.contains("shell_execute"))
+        val intern = roles.first { it.name == "实习生" }
+        assertTrue("unknown role gets a synthesized prompt", intern.prompt.contains(intern.name))
+    }
+
+    @Test
+    fun importTeamFromMindMapReturnsEmptyForNonMap() {
+        assertTrue(CollabRoles.importTeamFromMindMap("not a mind map at all").isEmpty())
+        assertTrue(CollabRoles.importTeamFromMindMap("").isEmpty())
+    }
+
+    @Test
+    fun mergeImportedCustomReplacesNamesCaseInsensitivelyAndKeepsOthers() {
+        val existing = listOf(
+            CollabRoles.Role("QA", "old", "old prompt", setOf("file_read"), builtin = false),
+            CollabRoles.Role("Reviewer", "keep", "keep prompt", setOf("file_read"), builtin = false),
+        )
+        val imported = listOf(
+            CollabRoles.Role("qa", "new", "new prompt", setOf("file_write"), builtin = false),
+            CollabRoles.Role("Engineer", "new role", "engineer prompt", setOf("shell_execute"), builtin = false),
+        )
+
+        val merged = CollabRoles.mergeImportedCustom(existing, imported)
+        assertEquals(listOf("Reviewer", "qa", "Engineer"), merged.map { it.name })
+        assertEquals("new prompt", merged.first { it.name == "qa" }.prompt)
+    }
+
+    @Test
+    fun duplicateMindMapMemberNamesProduceOnlyOneRole() {
+        val roles = CollabRoles.importTeamFromMindMap(
+            "Team\n  QA\n  QA",
+        )
+        assertEquals(1, roles.size)
+    }
 }

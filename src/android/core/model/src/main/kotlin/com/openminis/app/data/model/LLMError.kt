@@ -80,8 +80,18 @@ sealed class LLMError(message: String, cause: Throwable? = null) : Exception(mes
         "Content filtered: $detail",
     )
 
-    /** Server-side hiccup (5xx, connection dropped mid-stream, empty response). */
-    class TransientError(val detail: String) : LLMError("Transient error: $detail")
+    /**
+     * Server-side hiccup (5xx, connection dropped mid-stream, empty response).
+     * [stalledAfterFirstEvent] is true when the stream had already produced at
+     * least one chunk and then went quiet past the idle budget — i.e. a
+     * mid-stream stall rather than a never-started timeout. The retry layer
+     * uses it to decide whether to resume from the partial text ([T-stall-resume])
+     * or regenerate from scratch.
+     */
+    class TransientError(
+        val detail: String,
+        val stalledAfterFirstEvent: Boolean = false,
+    ) : LLMError("Transient error: $detail")
 
     /** Coroutine-level cancellation (user stopped, timeout, etc.). */
     class Cancelled : LLMError("Request was cancelled")

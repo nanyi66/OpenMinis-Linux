@@ -115,7 +115,10 @@ fun Flow<LLMStreamChunk>.streamStallWatchdog(
         throw LLMError.TransientError(reason)
     }
     if (stalledAfterFirstEvent.get()) {
-        throw LLMError.TransientError(idleReason)
+        // [T-stall-resume] Mark mid-stream stalls explicitly so the retry
+        // layer can resume from the partial text instead of regenerating
+        // from scratch (the stream WAS alive when it died).
+        throw LLMError.TransientError(idleReason, stalledAfterFirstEvent = true)
     }
 }
 

@@ -539,6 +539,13 @@ internal suspend fun ChatViewModel.runAgentLoop(
         // so we catch at collect level and unwrap.
         var collectDone = false
         var retryAttempt = 0  // per-provider; reset when falling back to the next member
+        // [T-stall-resume] Mid-stream stalls (stream was alive, then went quiet
+        // past the idle budget) carry the already-streamed text into the retry
+        // so the model continues instead of regenerating from scratch. Set in
+        // the retry catch when the TransientError carries stalledAfterFirstEvent,
+        // consumed by the retried requestHistory, cleared once a stream attempt
+        // succeeds (a normal `continue` never reaches the rollback that sets it).
+        var stallResumeContext: String? = null
         while (!collectDone) {
             try {
                 // [T-android-enhanced-cache] Stamp the per-turn Enhanced
@@ -571,7 +578,19 @@ internal suspend fun ChatViewModel.runAgentLoop(
                     effectiveAgentHistory(),
                     requestGoalPrompt,
                     appendNewUser = goalExecutionRun && turn == 0,
-                )
+                ).let { history ->
+                    // [T-stall-resume] A previous attempt stalled mid-stream:
+                    // append the bounded continuation note so this attempt picks
+                    // up where it stopped instead of regenerating the same text.
+                    val resumeNote = stallResumeContext
+                    if (resumeNote == null) history else history + LLMMessage(
+                        role = LLMMessage.Role.USER,
+                        content = resumeNote,
+                        contentParts = listOf(
+                            com.openminis.app.data.model.AgentContentPart.Text(resumeNote),
+                        ),
+                    )
+                }
                 // [T-first-event-watchdog] A hung relay below the provider
                 // never throws — the stream below will cancel itself and surface
                 // a TransientError, letting the existing retry chain take over.
@@ -974,6 +993,9 @@ internal suspend fun ChatViewModel.runAgentLoop(
                 lastOtherToolInputMs = 0L
                 collectDone = true
                 com.openminis.app.agent.GenerationRunStore.finish(context, generationRunId, ok = true)
+                // [T-stall-resume] The stream attempt succeeded — no resume
+                // context should leak into a later turn.
+                stallResumeContext = null
                 // Stream completed without error — clear any lingering retry UI state.
                 if (_autoRetryAttempt.value != 0 || _autoRetryCountdown.value != 0) {
                     _autoRetryAttempt.value = 0
@@ -1067,6 +1089,13 @@ internal suspend fun ChatViewModel.runAgentLoop(
                         }
                     }
                     // T307: SB-based per-turn accumulators reset.
+                    // [T-stall-resume] Capture the partial text BEFORE the reset:
+                    // a mid-stream stall (stalledAfterFirstEvent) carries the
+                    // already-produced text into the retried request so the model
+                    // continues instead of regenerating from scratch.
+                    if ((actual as? com.openminis.app.data.model.LLMError.TransientError)?.stalledAfterFirstEvent == true) {
+                        stallResumeContext = com.openminis.app.provider.StallResume.note(turnTextSb.toString())
+                    }
                     turnTextSb.setLength(0)
                     currentTextBlockSb = null
                     // [T-android-tool-splits-reply-fix] The tracked turn

@@ -1878,9 +1878,50 @@ class ChatViewModel(
     // the four exposure flags plus the plugin store's change stamp.
     private var agentToolsMemo: List<AgentToolDefinition>? = null
     private var agentToolsMemoStamp: Long = Long.MIN_VALUE
+    /** Long-tail tools made available by the current session's find_tools calls. */
+    private val enabledLongTailTools = linkedSetOf<String>()
+    private var enabledToolsSessionId: String = ""
+
+    internal fun enableDiscoveredTools(names: Collection<String>) {
+        synchronized(enabledLongTailTools) {
+            if (enabledToolsSessionId != activeSessionId) {
+                enabledLongTailTools.clear()
+                enabledToolsSessionId = activeSessionId
+            }
+            enabledLongTailTools.addAll(names)
+            agentToolsMemo = null
+        }
+    }
+
+    internal fun findAndEnableTools(query: String, limit: Int): com.openminis.app.tools.ToolExecutionResult {
+        val all = AgentTools.makeAgentTools(
+            supportsImageInput = currentModelHasNativeVision,
+            visionGroupConfigured = com.openminis.app.tools.VisionGroupResolver.isConfigured(providerRepository, context),
+            memoryEnabled = _memoryEnabled.value,
+            subAgentEnabled = multiAgentSettings.enabled.value,
+            codeGraphEnabled = true,
+            includeLongTail = true,
+        ) + com.openminis.app.plugins.OnlinePluginStore.toolDefinitions(context)
+        val matches = com.openminis.app.tools.FindTools.search(query, all, limit)
+        enableDiscoveredTools(matches.map { it.definition.name })
+        return com.openminis.app.tools.ToolExecutionResult(
+            output = com.openminis.app.tools.FindTools.format(matches),
+            success = matches.isNotEmpty(),
+            toolTitle = "find_tools",
+            errorCode = if (matches.isEmpty()) com.openminis.app.tools.ToolErrorCode.NOT_FOUND else null,
+        )
+    }
 
     internal val agentTools: List<AgentToolDefinition>
         get() {
+            synchronized(enabledLongTailTools) {
+                if (enabledToolsSessionId != activeSessionId) {
+                    enabledLongTailTools.clear()
+                    enabledToolsSessionId = activeSessionId
+                    agentToolsMemo = null
+                }
+            }
+            val enabledStamp = synchronized(enabledLongTailTools) { enabledLongTailTools.hashCode().toLong() }
             val stamp = (if (currentModelHasNativeVision) 1L else 0L) or
                 (if (com.openminis.app.tools.VisionGroupResolver.isConfigured(
                         providerRepository, context,
@@ -1888,7 +1929,8 @@ class ChatViewModel(
                 ) 2L else 0L) or
                 (if (_memoryEnabled.value) 4L else 0L) or
                 (if (multiAgentSettings.enabled.value) 8L else 0L) or
-                (com.openminis.app.plugins.OnlinePluginStore.toolDefinitionsStamp(context) shl 4)
+                (com.openminis.app.plugins.OnlinePluginStore.toolDefinitionsStamp(context) shl 4) xor
+                enabledStamp
             agentToolsMemo?.takeIf { agentToolsMemoStamp == stamp }?.let { return it }
             val built = AgentTools.makeAgentTools(
                 // [T-android-vision-group / GH#182] The main model's own vision
@@ -1906,6 +1948,8 @@ class ChatViewModel(
                 memoryEnabled = _memoryEnabled.value,
                 subAgentEnabled = multiAgentSettings.enabled.value,
                 codeGraphEnabled = true,
+                includeLongTail = false,
+                enabledToolNames = enabledLongTailTools,
             ) + com.openminis.app.plugins.OnlinePluginStore.toolDefinitions(context)
             agentToolsMemo = built
             agentToolsMemoStamp = stamp

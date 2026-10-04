@@ -54,15 +54,19 @@ class MemoryRecallEngine(
         private const val ARCHIVE_AFTER_DAYS = 90L
         private const val RECALL_BOOST_COEFF = 0.10
         private const val RECALL_BOOST_MAX = 0.15
+        private const val RECALL_COUNTS_FILE = ".recall-counts.json"
         private val CHINESE_PUNCT = setOf('，', '。', '、', '；', '：', '“', '”', '‘', '’', '（', '）', '【', '】', '《', '》', '？', '！')
 
         /**
          * Build an engine bound to the app's /var/minis/memory directory.
          * Returns null if the directory doesn't exist (memory feature disabled / not set up).
+         * Persisted recall counts are loaded from the `.recall-counts.json` sidecar
+         * so the M3-1 boost survives process restarts ([T-memory-recall-persist]).
          */
         fun fromDir(memoryDir: File): MemoryRecallEngine? {
             if (!memoryDir.exists()) memoryDir.mkdirs()
-            return if (memoryDir.isDirectory) MemoryRecallEngine { memoryDir } else null
+            if (!memoryDir.isDirectory) return null
+            return MemoryRecallEngine { memoryDir }.also { it.loadRecallCounts() }
         }
 
         fun fromContext(context: Context): MemoryRecallEngine? {
@@ -86,7 +90,7 @@ class MemoryRecallEngine(
             if (fileName == GLOBAL_FILE) "global" else fileName.removeSuffix(".md")
     }
 
-    /** recallCount — in-memory only, resets on process restart. */
+    /** recallCount — persisted to a JSON sidecar so the boost survives restarts. */
     private val recallCounts = ConcurrentHashMap<String, AtomicInteger>()
 
     data class RecallHit(
@@ -96,6 +100,8 @@ class MemoryRecallEngine(
         val score: Double,
         val recallCount: Int,
         val archived: Boolean,
+        /** [T-memory-recall-explain] Score breakdown (keywords / recency / recall) for callers that want to surface *why* an entry matched. */
+        val scoreDetail: String = "",
     )
 
     /**
@@ -179,7 +185,11 @@ class MemoryRecallEngine(
                 // Give headline lines a small priority tie-break.
                 val finalScore = score + (if (isHeadline) 0.3 else 0.0)
 
-                candidates.add(RecallHit(relName, trimmed, dayStr, finalScore, rc.get(), false))
+                // [T-memory-recall-explain] Human-readable breakdown for callers
+                // that surface *why* an entry matched (Settings → Memory debug).
+                val detail = "kw=$kwHits recency=${"%.2f".format(recencyBoost)} recall=${"%.2f".format(recallBonus)}"
+
+                candidates.add(RecallHit(relName, trimmed, dayStr, finalScore, rc.get(), false, detail))
             }
         }
 
@@ -214,7 +224,41 @@ class MemoryRecallEngine(
         val key = "${dayKeyOf(source)}:${line.trim()}"
         val count = recallCounts.getOrPut(key) { AtomicInteger(0) }.incrementAndGet()
         Log.d(TAG, "accepted recall: $source line=${line.take(40)}… count=$count")
+        // [T-memory-recall-persist] Persist the bump (atomic sidecar JSON) so a
+        // process restart does not wipe the accumulated boost.
+        saveRecallCounts()
     }
+
+    // ── recall-count persistence (sidecar JSON, atomic) ───────────────────
+
+    internal fun recallCountsFile(): File = File(memoryDirProvider(), RECALL_COUNTS_FILE)
+
+    fun loadRecallCounts() {
+        val file = recallCountsFile()
+        val text = readTextResilient(file, TAG) ?: return
+        try {
+            val obj = org.json.JSONObject(text)
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                val v = obj.optInt(k, 0)
+                if (k.isNotBlank() && v > 0) recallCounts.put(k, AtomicInteger(v))
+            }
+        } catch (_: Exception) {
+            Log.w(TAG, "recall-counts sidecar unreadable, starting fresh")
+        }
+    }
+
+    fun saveRecallCounts() {
+        val file = recallCountsFile()
+        val obj = org.json.JSONObject()
+        recallCounts.forEach { (k, v) -> if (v.get() > 0) obj.put(k, v.get()) }
+        writeTextAtomic(file, obj.toString())
+    }
+
+    /** Snapshot for tests/debug: (key, count) pairs, sorted by key. */
+    internal fun recallCountsSnapshot(): Map<String, Int> =
+        recallCounts.entries.associate { it.key to it.value.get() }.toSortedMap()
 
     private fun scanMemoryFiles(): List<File> {
         val memoryDir = memoryDirProvider()

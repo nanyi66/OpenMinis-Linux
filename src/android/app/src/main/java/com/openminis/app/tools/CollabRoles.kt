@@ -291,4 +291,61 @@ object CollabRoles {
 
     /** Tool whitelist for a role name, customs included. */
     fun toolsFor(context: Context, raw: String?): Set<String>? = byName(context, raw)?.tools
+
+    // ---- [T-mindmap-team-import] mind map → custom roles ------------------
+
+    /**
+     * Import a drawn org structure (Mermaid mindmap or indented tree) as
+     * custom roles: lowers the multi-agent config threshold — draw it, don't
+     * type it. Sub-team leads and plain members all get a CollabRoles card;
+     * when the member name matches a built-in role the builtin prompt/tools
+     * are reused, otherwise a generic executor prompt is synthesized.
+     * Returns the list of roles generated (customs), or empty when the text
+     * is not a parseable mind map.
+     */
+    fun importTeamFromMindMap(raw: String): List<Role> {
+        val team = MindMapTeamImport.parse(raw) ?: return emptyList()
+        val builtins = ALL.associateBy { it.name }
+        return team.members.map { member ->
+            val builtin = builtins[member.name] ?: builtins[member.name.trim()]
+            Role(
+                name = member.name,
+                description = member.description.ifBlank { builtin?.description ?: member.name },
+                prompt = builtin?.prompt ?: genericMemberPrompt(member.name, member.unit, member.isSubTeamLead),
+                tools = builtin?.tools ?: defaultMemberTools(member),
+                builtin = false,
+            )
+        }.distinctBy { it.name.trim().lowercase() }
+    }
+
+    /** Merge imported roles into saved custom roles, replacing names case-insensitively. */
+    fun mergeImportedCustom(existing: List<Role>, imported: List<Role>): List<Role> {
+        if (imported.isEmpty()) return existing
+        val importedNames = imported.map { it.name.trim().lowercase() }.toSet()
+        return existing.filterNot { it.name.trim().lowercase() in importedNames } + imported
+    }
+
+    private fun genericMemberPrompt(name: String, unit: String, lead: Boolean): String = buildString {
+        append("你是这个团队里的 $name")
+        if (unit.isNotBlank()) append("，归属 $unit")
+        appendLine("。")
+        appendLine()
+        if (lead) {
+            appendLine("你带一个下属单元，负责把该单元的工作拆给组员、对齐节奏、汇总结论。")
+            appendLine()
+        }
+        appendLine("你盯着的东西：你职责范围内的事做完、结论清晰、风险说在前面。")
+        appendLine("你不管的东西：其他单元的职责；技术实现细节除非影响你的产出。")
+        appendLine("该找谁：需求不清找 @产品经理；方案结构找 @架构师；要挑毛病找 @测试工程师；落纪要找 @秘书助理。")
+        appendLine("什么时候不说话：讨论推进正常、与你无关时不要刷存在感。")
+    }
+
+    private fun defaultMemberTools(member: MindMapTeamImport.ImportedTeam.ImportedMember): Set<String> =
+        when {
+            member.isSubTeamLead -> T_WRITER
+            member.name.contains("测试") || member.name.contains("QA") -> T_BUILDER
+            member.name.contains("前端") || member.name.contains("后端") ||
+                member.name.contains("工程") || member.name.contains("开发") -> T_BUILDER
+            else -> T_READONLY
+        }
 }

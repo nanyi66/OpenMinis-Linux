@@ -279,9 +279,23 @@ First-run: enable "Minis Ultra" under Settings → Accessibility, then `service 
         val obsId = publishObservation(svc, walkCollectedIds.toSet())
         return ok(args, JSONObject()
             .put("observation_id", obsId)
+            .put("window_token", windowToken(svc))
             .put("count", arr.length())
             .put("nodes", arr))
     }
+
+    /**
+     * [T-gui-window-token] Stable fingerprint of the foreground window, emitted
+     * by every `ui dump` / `ui find` / `ui info` so a caller can verify the
+     * screen did not change between reading it and acting on coordinates.
+     * Coordinate gestures (tap xy / swipe / scroll xy) accept `--window <token>`
+     * and refuse with WINDOW_CHANGED when the live fingerprint differs — the
+     * kelivo model: coordinates are only validated against window consistency,
+     * never against a stale node tree, so they stay usable on video / live
+     * streams where node identities churn every frame.
+     */
+    private fun windowToken(svc: MinisAccessibilityService): String =
+        java.lang.Integer.toHexString(treeSignature(svc)).padStart(8, '0')
 
     private fun walkNode(
         registry: NodeRegistry, node: AccessibilityNodeInfo?,
@@ -356,6 +370,7 @@ First-run: enable "Minis Ultra" under Settings → Accessibility, then `service 
         val obsId = publishObservation(svc, walkCollectedIds.toSet())
         return ok(args, JSONObject()
             .put("observation_id", obsId)
+            .put("window_token", windowToken(svc))
             .put("count", arr.length())
             .put("data", arr))
     }
@@ -400,6 +415,29 @@ First-run: enable "Minis Ultra" under Settings → Accessibility, then `service 
         }
     }
 
+    /**
+     * [T-gui-window-token] Coordinate-gesture gate: when the caller passes
+     * `--window <token>` (taken from a prior `ui dump`/`ui find`/`ui info`),
+     * refuse the gesture if the live foreground window no longer matches.
+     * Unlike node actions this validates window CONSISTENCY only — the
+     * coordinates themselves are not re-checked against the node tree, so the
+     * gesture remains usable on video / live-stream surfaces where node
+     * identities churn (kelivo dual-track model).
+     */
+    private fun requireWindow(args: OffloadArgs, svc: MinisAccessibilityService): NativeOffloadResult? {
+        val expected = args.get("window") ?: return null
+        val actual = windowToken(svc)
+        if (actual != expected) {
+            return err(
+                args,
+                "WINDOW_CHANGED",
+                "window changed since the snapshot carrying window_token=$expected (now $actual). " +
+                    "Re-read the screen (ui dump), then retry the gesture with the fresh window_token.",
+            )
+        }
+        return null
+    }
+
     private fun matchesPredicate(n: AccessibilityNodeInfo, args: OffloadArgs): Boolean {
         args.get("text")?.let { if (n.text?.toString() != it) return false }
         args.get("text-contains")?.let { if (n.text?.toString()?.contains(it) != true) return false }
@@ -427,6 +465,7 @@ First-run: enable "Minis Ultra" under Settings → Accessibility, then `service 
         return ok(args, JSONObject()
             .put("packageName", pkg ?: "")
             .put("activityName", cls ?: "")
+            .put("window_token", windowToken(svc))
             .put("windowCount", windows.size)
             .put("windows", winArr))
     }
@@ -555,6 +594,7 @@ First-run: enable "Minis Ultra" under Settings → Accessibility, then `service 
     }
 
     private fun tapXYRaw(svc: MinisAccessibilityService, x: Int, y: Int, args: OffloadArgs): NativeOffloadResult {
+        requireWindow(args, svc)?.let { return it }
         val duration = args.getLong("duration") ?: if (args.hasFlag("long")) 1000L else 50L
         val path = Path().apply {
             moveTo(x.toFloat(), y.toFloat())
@@ -738,6 +778,7 @@ First-run: enable "Minis Ultra" under Settings → Accessibility, then `service 
 
     private fun scrollXY(args: OffloadArgs): NativeOffloadResult {
         val svc = svcOrThrow()
+        requireWindow(args, svc)?.let { return it }
         val x = args.positional.getOrNull(2)?.toIntOrNull()
             ?: return NativeOffloadResult(2, "$TOOL scroll xy: missing <x>\n")
         val y = args.positional.getOrNull(3)?.toIntOrNull()
@@ -813,6 +854,7 @@ First-run: enable "Minis Ultra" under Settings → Accessibility, then `service 
 
     private fun gestureSwipe(args: OffloadArgs): NativeOffloadResult {
         val svc = svcOrThrow()
+        requireWindow(args, svc)?.let { return it }
         val x1 = args.positional.getOrNull(2)?.toIntOrNull() ?: return NativeOffloadResult(2, "$TOOL gesture swipe: missing <x1>\n")
         val y1 = args.positional.getOrNull(3)?.toIntOrNull() ?: return NativeOffloadResult(2, "$TOOL gesture swipe: missing <y1>\n")
         val x2 = args.positional.getOrNull(4)?.toIntOrNull() ?: return NativeOffloadResult(2, "$TOOL gesture swipe: missing <x2>\n")
@@ -826,6 +868,7 @@ First-run: enable "Minis Ultra" under Settings → Accessibility, then `service 
 
     private fun gesturePinch(args: OffloadArgs): NativeOffloadResult {
         val svc = svcOrThrow()
+        requireWindow(args, svc)?.let { return it }
         val cx = args.positional.getOrNull(2)?.toFloatOrNull() ?: return NativeOffloadResult(2, "$TOOL gesture pinch: missing <cx>\n")
         val cy = args.positional.getOrNull(3)?.toFloatOrNull() ?: return NativeOffloadResult(2, "$TOOL gesture pinch: missing <cy>\n")
         val scale = args.getDouble("scale")?.toFloat() ?: 0.5f
@@ -837,6 +880,7 @@ First-run: enable "Minis Ultra" under Settings → Accessibility, then `service 
 
     private fun gesturePath(args: OffloadArgs): NativeOffloadResult {
         val svc = svcOrThrow()
+        requireWindow(args, svc)?.let { return it }
         val pointsStr = args.positional.getOrNull(2)
             ?: return NativeOffloadResult(2, "$TOOL gesture path: missing <points>\n")
         val pts = pointsStr.split(":").map {

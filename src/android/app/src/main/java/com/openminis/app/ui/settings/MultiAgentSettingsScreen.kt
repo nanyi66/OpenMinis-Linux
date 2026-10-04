@@ -5,6 +5,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Groups
@@ -183,6 +186,16 @@ fun MultiAgentSettingsScreen(
         ) {
             var editingRole by remember { mutableStateOf<com.openminis.app.tools.CollabRoles.Role?>(null) }
             var showAddDialog by remember { mutableStateOf(false) }
+            var showMindMapDialog by remember { mutableStateOf(false) }
+            var showMindMapOverwriteDialog by remember { mutableStateOf(false) }
+            var mindMapDraft by remember { mutableStateOf("") }
+            var mindMapStatus by remember { mutableStateOf<String?>(null) }
+            val importedTeam = remember(mindMapDraft) {
+                com.openminis.app.tools.MindMapTeamImport.parse(mindMapDraft)
+            }
+            val importedRoles = remember(mindMapDraft) {
+                com.openminis.app.tools.CollabRoles.importTeamFromMindMap(mindMapDraft)
+            }
             val roles = com.openminis.app.tools.CollabRoles.allWithCustom(context)
             roles.forEachIndexed { index, role ->
                 SettingsRow(
@@ -195,12 +208,103 @@ fun MultiAgentSettingsScreen(
                 )
             }
             SettingsRow(
+                title = stringResource(R.string.settings_collab_roles_import_mindmap),
+                subtitle = stringResource(R.string.settings_collab_roles_import_mindmap_subtitle),
+                showChevron = true,
+                onClick = {
+                    mindMapDraft = ""
+                    mindMapStatus = null
+                    showMindMapDialog = true
+                },
+                showDivider = true,
+            )
+            mindMapStatus?.let { status ->
+                Text(
+                    text = status,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
+            SettingsRow(
                 title = "+ 新增角色",
                 subtitle = "自定义名字/描述/提示词/工具白名单, 同名覆盖内置",
                 showChevron = false,
                 onClick = { showAddDialog = true },
                 showDivider = false,
             )
+            if (showMindMapDialog && !showMindMapOverwriteDialog) {
+                MindMapTeamImportDialog(
+                    raw = mindMapDraft,
+                    onRawChange = { mindMapDraft = it },
+                    team = importedTeam,
+                    roles = importedRoles,
+                    onDismiss = { showMindMapDialog = false },
+                    onRequestImport = {
+                        val customNames = com.openminis.app.tools.CollabRoles.loadCustom(context)
+                            .map { it.name.trim().lowercase() }
+                            .toSet()
+                        val conflicts = importedRoles.map { it.name }
+                            .filter { it.trim().lowercase() in customNames }
+                        if (conflicts.isEmpty()) {
+                            val merged = com.openminis.app.tools.CollabRoles.mergeImportedCustom(
+                                com.openminis.app.tools.CollabRoles.loadCustom(context),
+                                importedRoles,
+                            )
+                            com.openminis.app.tools.CollabRoles.saveCustom(context, merged)
+                            mindMapStatus = context.getString(
+                                R.string.settings_collab_roles_import_done,
+                                importedRoles.size,
+                            )
+                            showMindMapDialog = false
+                        } else {
+                            showMindMapOverwriteDialog = true
+                        }
+                    },
+                )
+            }
+            if (showMindMapOverwriteDialog) {
+                AlertDialog(
+                    onDismissRequest = { showMindMapOverwriteDialog = false },
+                    title = { Text(stringResource(R.string.settings_collab_roles_import_overwrite_title)) },
+                    text = {
+                        val customNames = com.openminis.app.tools.CollabRoles.loadCustom(context)
+                            .map { it.name.trim().lowercase() }
+                            .toSet()
+                        val conflicts = importedRoles.map { it.name }
+                            .filter { it.trim().lowercase() in customNames }
+                            .distinct()
+                        Text(
+                            stringResource(
+                                R.string.settings_collab_roles_import_overwrite_text,
+                                conflicts.joinToString(),
+                            ),
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            val merged = com.openminis.app.tools.CollabRoles.mergeImportedCustom(
+                                com.openminis.app.tools.CollabRoles.loadCustom(context),
+                                importedRoles,
+                            )
+                            com.openminis.app.tools.CollabRoles.saveCustom(context, merged)
+                            mindMapStatus = context.getString(
+                                R.string.settings_collab_roles_import_done,
+                                importedRoles.size,
+                            )
+                            showMindMapOverwriteDialog = false
+                            showMindMapDialog = false
+                        }) {
+                            Text(stringResource(R.string.settings_collab_roles_import_replace))
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showMindMapOverwriteDialog = false }) {
+                            Text(stringResource(R.string.settings_collab_roles_import_cancel))
+                        }
+                    },
+                )
+            }
             if (editingRole != null || showAddDialog) {
                 CollabRoleEditDialog(
                     initial = editingRole,
@@ -255,6 +359,92 @@ fun MultiAgentSettingsScreen(
             }
         }
     }
+}
+
+@Composable
+private fun MindMapTeamImportDialog(
+    raw: String,
+    onRawChange: (String) -> Unit,
+    team: com.openminis.app.tools.MindMapTeamImport.ImportedTeam?,
+    roles: List<com.openminis.app.tools.CollabRoles.Role>,
+    onDismiss: () -> Unit,
+    onRequestImport: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_collab_roles_import_title)) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 560.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlinedTextField(
+                    value = raw,
+                    onValueChange = onRawChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(stringResource(R.string.settings_collab_roles_import_hint)) },
+                    placeholder = {
+                        Text(
+                            """mindmap
+                              root((产品团队))
+                                PM[产品经理]
+                                QA[测试工程师]""".trimIndent(),
+                        )
+                    },
+                    minLines = 5,
+                    maxLines = 8,
+                )
+                if (roles.isEmpty()) {
+                    Text(
+                        stringResource(R.string.settings_collab_roles_import_empty),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        text = buildString {
+                            append(stringResource(R.string.settings_collab_roles_import_preview_count, roles.size))
+                            team?.roomName?.takeIf { it.isNotBlank() }?.let { append(" · ").append(it) }
+                        },
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    team?.blurb?.takeIf { it.isNotBlank() }?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    roles.forEachIndexed { index, role ->
+                        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                            Text(
+                                text = role.name + if (team?.members?.firstOrNull { it.name == role.name }?.isSubTeamLead == true) " · 组长" else "",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Text(
+                                text = role.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (index < roles.lastIndex) {
+                            androidx.compose.material3.HorizontalDivider()
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = roles.isNotEmpty(), onClick = onRequestImport) {
+                Text(stringResource(R.string.settings_collab_roles_import_confirm, roles.size))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.settings_collab_roles_import_cancel))
+            }
+        },
+    )
 }
 
 @Composable

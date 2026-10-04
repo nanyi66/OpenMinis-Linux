@@ -1,8 +1,25 @@
 package com.openminis.app.tools
 
+/** Stable machine-readable error categories returned alongside human output. */
+enum class ToolErrorCode {
+    INVALID_ARGUMENTS,
+    NOT_FOUND,
+    PERMISSION_DENIED,
+    AUTH_REQUIRED,
+    NETWORK_ERROR,
+    TIMEOUT,
+    UNSUPPORTED,
+    EXECUTION_FAILED,
+    UNKNOWN_TOOL,
+    /** Screen/window changed since the snapshot the action was planned against. */
+    STALE_OBSERVATION,
+}
+
 data class ToolExecutionResult(
     val output: String,
     val success: Boolean,
+    val errorCode: ToolErrorCode? = null,
+    val recoveryHint: String? = null,
     val imageData: ByteArray? = null,
     val imageMimeType: String? = null,
     val toolTitle: String = "",
@@ -32,6 +49,7 @@ data class ToolExecutionResult(
         if (this === other) return true
         if (other !is ToolExecutionResult) return false
         return output == other.output && success == other.success &&
+            errorCode == other.errorCode && recoveryHint == other.recoveryHint &&
             imageData.contentEquals(other.imageData) &&
             imageMimeType == other.imageMimeType && toolTitle == other.toolTitle &&
             pageURL == other.pageURL && imageFilePath == other.imageFilePath &&
@@ -42,6 +60,8 @@ data class ToolExecutionResult(
     override fun hashCode(): Int {
         var result = output.hashCode()
         result = 31 * result + success.hashCode()
+        result = 31 * result + (errorCode?.hashCode() ?: 0)
+        result = 31 * result + (recoveryHint?.hashCode() ?: 0)
         result = 31 * result + (imageData?.contentHashCode() ?: 0)
         result = 31 * result + (imageMimeType?.hashCode() ?: 0)
         result = 31 * result + toolTitle.hashCode()
