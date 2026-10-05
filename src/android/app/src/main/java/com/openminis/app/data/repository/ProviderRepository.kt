@@ -513,12 +513,31 @@ class ProviderRepository(private val context: Context) {
     private fun ensureBuiltInZenProvider() = synchronized(configLock) {
         if (!_configLoaded.value) return@synchronized
         val current = _config.value
-        val endpoint = "https://opencode.ai/zen/v1"
+        val endpoint = ZEN_BUNDLED_ENDPOINT
         // A user-created instance pointing at the same Zen endpoint already
         // represents this service; do not duplicate or mutate it. A same-label
         // instance with another endpoint is NOT a conflict: preserve it and use
         // a deterministic suffix for the bundled provider.
-        if (current.instances.any { isZenInstance(it) }) {
+        //
+        // But an existing Zen instance that has never catalogued a model is
+        // exactly the "no free models anywhere" report: the hand-built
+        // instance won the skip check, its live refresh never landed, and the
+        // bundle was never seeded either. Reconciliation then fills the empty
+        // shell — the instance keeps its id/label/credentials, and a later
+        // live refresh still replaces the bundled list.
+        val existingZen = current.instances.firstOrNull { isZenInstance(it) }
+        if (existingZen != null) {
+            if (zenInstanceNeedsBundledModels(existingZen, current.modelEntries)) {
+                val config = workingCopy()
+                config.modelEntries.addAll(bundledZenModels().map {
+                    ModelEntry(providerInstanceId = existingZen.id, baseModel = it)
+                })
+                saveConfig(config)
+                android.util.Log.i(
+                    "ProviderRepo",
+                    "[BuiltIn] seeded ${bundledZenModels().size} bundled models into empty Zen instance ${existingZen.id} '${existingZen.label}'",
+                )
+            }
             return@synchronized
         }
 
@@ -540,12 +559,7 @@ class ProviderRepository(private val context: Context) {
         )
         config.instances.add(instance)
         saveApiKey(instance.id, "public")
-        val models = listOf(
-            LLMModel("big-pickle", "Big Pickle (Free)", "OpenCode Zen", 262144, 32768, true, inputModalities = listOf("text", "image")),
-            LLMModel("mimo-v2.6-flash-free", "MiMo v2.6 Flash Free", "OpenCode Zen", 128000, 8192, true),
-            LLMModel("ling-3.0-flash-fin-free", "Ling 3.0 Flash Finance Free", "OpenCode Zen", 128000, 8192),
-            LLMModel("nemotron-3-ultra-free", "Nemotron 3 Ultra Free", "OpenCode Zen", 128000, 4096, true),
-        )
+        val models = bundledZenModels()
         config.modelEntries.addAll(models.map { ModelEntry(providerInstanceId = instance.id, baseModel = it) })
         saveConfig(config)
         android.util.Log.i("ProviderRepo", "[BuiltIn] seeded Zen instance ${instance.id} as '${instance.label}'")
@@ -559,7 +573,7 @@ class ProviderRepository(private val context: Context) {
      * Mirrors iOS `ProviderConfigStore.isThirdPartyOpenAICompat`.
      */
     private fun isZenInstance(instance: ProviderInstance): Boolean =
-        instance.customBaseURL?.trimEnd('/') == "https://opencode.ai/zen/v1"
+        instance.customBaseURL?.trimEnd('/') == ZEN_BUNDLED_ENDPOINT
 
     private fun isThirdPartyOpenAICompat(instance: ProviderInstance): Boolean {
         if (instance.providerType != ProviderType.openAI) return false
@@ -2525,3 +2539,27 @@ enum class ModelRefreshResult {
     PRESERVED,
     FAILURE,
 }
+
+/** Bundled OpenCode Zen endpoint — single source for seed/patch/matching. */
+internal const val ZEN_BUNDLED_ENDPOINT = "https://opencode.ai/zen/v1"
+
+/** Free-lane models bundled with the app for the Zen endpoint. */
+internal fun bundledZenModels(): List<LLMModel> = listOf(
+    LLMModel("big-pickle", "Big Pickle (Free)", "OpenCode Zen", 262144, 32768, true, inputModalities = listOf("text", "image")),
+    LLMModel("mimo-v2.6-flash-free", "MiMo v2.6 Flash Free", "OpenCode Zen", 128000, 8192, true),
+    LLMModel("ling-3.0-flash-fin-free", "Ling 3.0 Flash Finance Free", "OpenCode Zen", 128000, 8192),
+    LLMModel("nemotron-3-ultra-free", "Nemotron 3 Ultra Free", "OpenCode Zen", 128000, 4096, true),
+)
+
+/**
+ * Whether [instance] still shows the user "no free models anywhere": it
+ * points at the bundled Zen endpoint but has never catalogued a single
+ * model entry (hand-built before the bundle shipped, or its live refresh
+ * failed). Only then may reconciliation seed the bundled models into it.
+ */
+internal fun zenInstanceNeedsBundledModels(
+    instance: com.openminis.app.data.model.ProviderInstance,
+    entries: List<ModelEntry>,
+): Boolean =
+    instance.customBaseURL?.trimEnd('/') == ZEN_BUNDLED_ENDPOINT &&
+        entries.none { it.providerInstanceId == instance.id }
