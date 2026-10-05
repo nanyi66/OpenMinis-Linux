@@ -318,20 +318,36 @@ internal fun mergeStreamingOverlay(
     if (streaming.isEmpty()) return messages
     return messages.map { m ->
         val delta = streaming[m.id] ?: return@map m
-        // Streaming text is authoritative even when the canonical snapshot
-        // still carries the previous tool/text block list. Without updating
-        // that trailing text block, buildFlatChatItems renders stale content
-        // for assistant turns that already contain process blocks.
-        val sourceBlocks = if (delta.toolBlocks.isNotEmpty()) delta.toolBlocks else m.toolBlocks
-        val textIndex = sourceBlocks.indexOfLast { it.kind == "text" }
-        val blocks = if (textIndex >= 0 && sourceBlocks[textIndex].content != delta.content) {
-            sourceBlocks.toMutableList().also { list ->
-                list[textIndex] = list[textIndex].copy(content = delta.content)
-            }
-        } else {
-            sourceBlocks
+        // [T-android-stream-duplicate-text] `delta.content` is the WHOLE
+        // assistant reply accumulated across every tool round, while
+        // `delta.toolBlocks` is that same reply split chronologically into
+        // per-round text/tool blocks (the producer appends each round's text
+        // block and keeps advancing only that block; rounds never repeat
+        // earlier text). Overwriting one block with the cumulative string
+        // therefore duplicated everything before it: whichever text block was
+        // last kept its own fragment AND re-rendered rounds 1..N-1 again, so a
+        // turn with text A → tool → text B painted "A" then "A+B".
+        //
+        // The blocks are the authority for what each row renders, so take them
+        // verbatim:
+        //  - delta.toolBlocks non-empty → newest per-round snapshot. copy() it
+        //    (the delta list is shared) but never rewrite a block's content.
+        //  - delta.toolBlocks empty but the canonical message already carries
+        //    blocks → keep those. Rewriting the last text block with the
+        //    cumulative content would re-introduce the exact duplication.
+        //  - canonical blocks also empty (pre-first-block turn) → stay empty;
+        //    the typing indicator renders and the legacy fallback below is
+        //    driven by content == "" while nothing has arrived.
+        // Fall back to m.toolBlocks rather than [] so a machine-migration
+        // streaming message without a toolBlocks list keeps its blocks.
+        val blocks = when {
+            delta.toolBlocks.isNotEmpty() -> delta.toolBlocks
+            m.toolBlocks.isNotEmpty() -> m.toolBlocks
+            else -> emptyList()
         }
         m.copy(
+            // Content stays authoritative on its own field (non-render
+            // consumers: persistence, copy/translate fallbacks).
             content = delta.content,
             isStreaming = true,
             toolBlocks = blocks,

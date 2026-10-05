@@ -77,9 +77,14 @@ class ChatTimelineVisibilityRegressionTest {
     fun streamingOverlayChangesContentWithoutDroppingMiddleMessage() {
         val base = session(100)
         val middle = base[81] // assistant-40
+        // The side-channel carries a real per-round block snapshot, NOT the
+        // cumulative content smeared over one block: here the live text block
+        // holds the newly streamed fragment itself.
+        val streamedText = middle.toolBlocks.filter { it.kind == "text" }
+            .map { it.copy(content = "streamed-middle") }
         val delta = StreamingDelta(
             content = "streamed-middle",
-            toolBlocks = middle.toolBlocks,
+            toolBlocks = streamedText,
             isAwaitingModelResponse = false,
         )
         val overlaid = mergeStreamingOverlay(base, mapOf(middle.id to delta))
@@ -87,6 +92,117 @@ class ChatTimelineVisibilityRegressionTest {
 
         assertTrue(rows.filterIsInstance<FlatChatItem.AssistantMarkdownBlock>()
             .any { it.messageId == middle.id && it.rawText == "streamed-middle" })
+    }
+
+    // ---------------- cumulative-content duplication regression ----------------
+    //
+    // [T-android-stream-duplicate-text] Repro of the duplicate-output bug:
+    // `StreamingDelta.content` is the WHOLE reply accumulated across tool
+    // rounds ("TEXT_A\n\nTEXT_B"), while `StreamingDelta.toolBlocks` is the
+    // same reply split chronologically into text A, tool, text B. The overlay
+    // used to write the cumulative content into the LAST text block, so the
+    // rows read TEXT_A, tool, TEXT_A+TEXT_B — text A twice.
+
+    private val textA = "TEXT_A_alpha"
+    private val textB = "TEXT_B_beta"
+    private val cumulativeContent = "$textA\n\n$textB"
+
+    private fun blocksWithToolBetweenTwoTexts(id: String) = listOf(
+        AssistantBlock("$id-text-a", "text", textA),
+        AssistantBlock(
+            id = "$id-tool",
+            kind = "tool_use",
+            toolName = "shell",
+            toolTitle = "shell",
+            toolStatus = ToolBlockStatus.SUCCESS,
+        ),
+        AssistantBlock("$id-text-b", "text", textB),
+    )
+
+    private fun cumulativeDelta(id: String) = StreamingDelta(
+        content = cumulativeContent,
+        toolBlocks = blocksWithToolBetweenTwoTexts(id),
+        isAwaitingModelResponse = false,
+    )
+
+    private fun markdownRows(items: List<FlatChatItem>): List<FlatChatItem.AssistantMarkdownBlock> =
+        items.filterIsInstance<FlatChatItem.AssistantMarkdownBlock>()
+
+    private fun occurrences(haystack: String, needle: String): Int {
+        var count = 0
+        var from = 0
+        while (true) {
+            val at = haystack.indexOf(needle, from)
+            if (at < 0) return count
+            count++
+            from = at + needle.length
+        }
+    }
+
+    @Test
+    fun cumulativeStreamingContentDoesNotDuplicateEarlierTextBlocksWhenFolded() {
+        val base = session(100)
+        val target = base.first { it.id == "assistant-40" }
+        val overlaid = mergeStreamingOverlay(base, mapOf(target.id to cumulativeDelta(target.id)))
+        val message = overlaid.first { it.id == target.id }
+
+        // Content stays authoritative on its own field...
+        assertEquals(cumulativeContent, message.content)
+        assertTrue(message.isStreaming)
+        // ...while the split blocks stay exactly as the producer snapped them.
+        val texts = message.toolBlocks.filter { it.kind == "text" }.map { it.content }
+        assertEquals(listOf(textA, textB), texts)
+
+        val rows = markdownRows(buildFlatChatItems(overlaid, foldAiProcess = true))
+            .filter { it.messageId == target.id }
+
+        // Two text rows (one per text block), each carrying only its fragment —
+        // the whole-reply markdown row must not repeat them.
+        assertEquals(listOf(textA, textB), rows.map { it.rawText })
+        assertEquals(listOf(cumulativeContent, cumulativeContent), rows.map { it.messageMarkdown })
+        val renderedText = rows.joinToString("\n") { it.rawText }
+        assertEquals(1, occurrences(renderedText, textA))
+        assertEquals(1, occurrences(renderedText, textB))
+    }
+
+    @Test
+    fun cumulativeStreamingContentDoesNotDuplicateEarlierTextBlocksWhenExpanded() {
+        val base = session(100)
+        val target = base.first { it.id == "assistant-40" }
+        val overlaid = mergeStreamingOverlay(base, mapOf(target.id to cumulativeDelta(target.id)))
+        val message = overlaid.first { it.id == target.id }
+
+        assertEquals(cumulativeContent, message.content)
+        assertEquals(
+            listOf(textA, textB),
+            message.toolBlocks.filter { it.kind == "text" }.map { it.content },
+        )
+
+        val rows = markdownRows(
+            buildFlatChatItems(
+                overlaid,
+                foldAiProcess = true,
+                expandedProcessIds = setOf(target.id),
+            ),
+        ).filter { it.messageId == target.id }
+
+        assertEquals(listOf(textA, textB), rows.map { it.rawText })
+        assertEquals(listOf(cumulativeContent, cumulativeContent), rows.map { it.messageMarkdown })
+        val renderedText = rows.joinToString("\n") { it.rawText }
+        assertEquals(1, occurrences(renderedText, textA))
+        assertEquals(1, occurrences(renderedText, textB))
+    }
+
+    @Test
+    fun cumulativeStreamingContentDoesNotTouchCompletedSiblingMessages() {
+        val base = session(100)
+        val target = base.first { it.id == "assistant-40" }
+        val overlaid = mergeStreamingOverlay(base, mapOf(target.id to cumulativeDelta(target.id)))
+
+        // Only the streaming turn changes; every other row keeps its snapshot.
+        val others = overlaid.filter { it.id != target.id }
+        assertEquals(base.filter { it.id != target.id }, others)
+        assertTrue(others.none { it.isStreaming })
     }
 
     @Test
