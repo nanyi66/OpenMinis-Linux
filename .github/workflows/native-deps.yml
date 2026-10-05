@@ -1,0 +1,102 @@
+name: Native dependencies
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Must match ndkVersion and minis-android-sdk-setup NDK_REV.
+  ANDROID_NDK: "29.0.14206865"
+
+jobs:
+  build-native-deps:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install build tools and Android NDK
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y curl unzip make gawk sed file python3 cmake ninja-build g++ git
+          mkdir -p /usr/local/lib/android/sdk/cmdline-tools
+          curl -fsSL -o /tmp/cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q /tmp/cmdline-tools.zip -d /tmp/sdk
+          mv /tmp/sdk/cmdline-tools /usr/local/lib/android/sdk/cmdline-tools/latest
+          yes | /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null || true
+          /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager "ndk;${ANDROID_NDK}" "cmake;3.22.1"
+      - name: Build PRoot
+        env:
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/${{ env.ANDROID_NDK }}
+        run: bash deps/build_proot.sh
+      - name: Build rclone AAR
+        env:
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/${{ env.ANDROID_NDK }}
+          # deps/rclone-mobile/go.mod requires go 1.26.0. Installing 1.25 and
+          # then gomobile@latest made the toolchain jump to 1.26 mid-step.
+          GO_VERSION: "1.26.8"
+          GO_SHA256: "d0f743b33e8d8945e6b1f432edd15785c70507121d6e2a723b21285eddf8b57b"
+          GOMOBILE_VERSION: "v0.0.0-20260908204917-8b95e45f8d3e"
+          GOTOOLCHAIN: local
+          GOPROXY: "https://proxy.golang.org,direct"
+          # aac4d26 native-deps died on sum.golang.org HTTP/2 INTERNAL_ERROR
+          # while verifying azblob. Force HTTP/1.1 and retry the module steps.
+          GODEBUG: "http2client=0"
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
+            -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c -
+          sudo rm -rf /usr/local/go
+          sudo tar -C /usr/local -xzf /tmp/go.tar.gz
+          echo "/usr/local/go/bin" >> "$GITHUB_PATH"
+          export PATH="/usr/local/go/bin:${PATH}"
+          go version | grep -F "go${GO_VERSION}"
+          retry() {
+            local attempt=1
+            local max=5
+            local delay=5
+            while true; do
+              if "$@"; then
+                return 0
+              fi
+              if [ "$attempt" -ge "$max" ]; then
+                echo "failed after ${max} attempts: $*" >&2
+                return 1
+              fi
+              echo "attempt ${attempt} failed, retrying in ${delay}s: $*" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+          retry go install "golang.org/x/mobile/cmd/gomobile@${GOMOBILE_VERSION}"
+          gopath_bin="$(go env GOPATH)/bin"
+          echo "$gopath_bin" >> "$GITHUB_PATH"
+          export PATH="${PATH}:${gopath_bin}"
+          retry gomobile init
+          retry bash deps/build_rclone_android.sh
+      - name: Build libunwind
+        env:
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/${{ env.ANDROID_NDK }}
+          LLVM_SRC: ${{ github.workspace }}/.llvm-libunwind
+          LIBUNWIND_BUILD: ${{ runner.temp }}/libunwind-build
+        run: bash scripts/build_libunwind_aarch64.sh "$ANDROID_NDK_HOME"
+      - name: Stage native artifacts
+        run: |
+          mkdir -p native-artifacts/assets native-artifacts/jniLibs/arm64-v8a native-artifacts/libs
+          cp src/android/app/src/main/assets/proot-aarch64 native-artifacts/assets/
+          cp src/android/app/src/main/jniLibs/arm64-v8a/libproot.so native-artifacts/jniLibs/arm64-v8a/
+          cp deps/build/rclone/rclone.aar native-artifacts/libs/
+          find /usr/local/lib/android/sdk/ndk/${ANDROID_NDK}/toolchains/llvm/prebuilt -path '*sysroot/usr/lib/aarch64-linux-android/libunwind.a' -print -quit | xargs -I{} cp {} native-artifacts/libunwind.a
+          test -s native-artifacts/libunwind.a
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-deps-${{ github.sha }}
+          path: native-artifacts
+          if-no-files-found: error
+          retention-days: 7

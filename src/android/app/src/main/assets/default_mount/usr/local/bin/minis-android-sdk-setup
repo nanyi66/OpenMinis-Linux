@@ -1,0 +1,587 @@
+#!/bin/sh
+# Android SDK for this Ubuntu 24.04 arm64 PRoot guest.
+#
+# Native tools (aapt2, zipalign, adb, aidl) and Java sdkmanager are vendored
+# in the APK and unpacked to ANDROID_HOME on first boot. sdkmanager is used
+# only to fetch architecture-independent platforms (android.jar).
+#
+# Do NOT install Google's linux build-tools / cmake / ndk via sdkmanager —
+# those host tools are x86_64 and would overwrite aarch64 binaries or sit
+# unusable under PRoot.
+set -e
+export DEBIAN_FRONTEND=noninteractive
+export TMPDIR=/tmp
+export TMP=/tmp
+export TEMP=/tmp
+mkdir -p /tmp /var/tmp
+chmod 1777 /tmp /var/tmp 2>/dev/null || true
+
+SDK_ROOT=/opt/android-sdk
+BUILD_TOOLS_REV=35.0.2
+CMAKE_VER="${MINIS_CMAKE_VER:-3.31.6}"
+CMAKE_FALLBACK=3.22.1
+AAPT2="$SDK_ROOT/build-tools/$BUILD_TOOLS_REV/aapt2"
+SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+# Same revision as ndkVersion and CI ANDROID_NDK. Do not accept r28.
+NDK_REV=29.0.14206865
+NDK_TAG=r29
+if [ -n "${MINIS_NDK_TAG:-}" ] && [ "$MINIS_NDK_TAG" != "$NDK_TAG" ]; then
+  echo "MINIS_NDK_TAG=$MINIS_NDK_TAG ignored; this setup only installs NDK $NDK_TAG ($NDK_REV)." >&2
+fi
+
+echo "minis-android-sdk-setup: ANDROID_HOME=$SDK_ROOT"
+
+need_dev=0
+command -v java >/dev/null 2>&1 || need_dev=1
+command -v gradle >/dev/null 2>&1 || need_dev=1
+command -v curl >/dev/null 2>&1 || need_dev=1
+command -v unzip >/dev/null 2>&1 || need_dev=1
+command -v tar >/dev/null 2>&1 || need_dev=1
+[ -f /etc/ssl/certs/ca-certificates.crt ] || need_dev=1
+if [ "$need_dev" -eq 1 ]; then
+  echo "JDK/Gradle/curl/certs missing — running minis-dev-setup first..."
+  /usr/local/bin/minis-dev-setup
+fi
+
+HOST_ARCH=$(uname -m)
+case "$HOST_ARCH" in
+  aarch64|arm64) GUEST_AARCH64=1 ;;
+  *) GUEST_AARCH64=0 ;;
+esac
+
+curl_first() {
+  # POSIX sh has no function scope. A bare dest= here used to overwrite
+  # install_one_cmake's dest, so the tree was moved onto the tarball path.
+  _curl_dest=$1
+  shift
+  for url in "$@"; do
+    [ -n "$url" ] || continue
+    echo "  downloading $url"
+    rm -f "$_curl_dest"
+    # A mirror that connects and then sends nothing used to sit until the
+    # 30-minute shell budget, and curl's meter is CR-only so the chat card
+    # stayed blank. Abort only a dead transfer (<100 B/s for 30s). A slow but
+    # alive link keeps going, and the byte line below is what the card shows.
+    curl -fL --retry 1 --retry-delay 1 --connect-timeout 12 \
+      --speed-time 30 --speed-limit 100 \
+      -o "$_curl_dest" "$url" &
+    _cpid=$!
+    _ticks=0
+    while kill -0 "$_cpid" 2>/dev/null; do
+      sleep 5
+      if ! kill -0 "$_cpid" 2>/dev/null; then
+        break
+      fi
+      _ticks=$((_ticks + 1))
+      if [ -f "$_curl_dest" ]; then
+        _sz=$(wc -c < "$_curl_dest" 2>/dev/null | tr -d ' ' || true)
+        echo "  …已下载 ${_sz:-0} 字节（$((_ticks * 5))s）"
+      else
+        echo "  …连接中（$((_ticks * 5))s）"
+      fi
+    done
+    if wait "$_cpid"; then
+      return 0
+    fi
+    echo "  failed $url" >&2
+    rm -f "$_curl_dest"
+  done
+  return 1
+}
+
+github_urls() {
+  # $1 = https://github.com/org/repo/releases/download/tag/file
+  orig=$1
+  echo "https://ghfast.top/$orig"
+  echo "https://ghproxy.net/$orig"
+  echo "https://mirror.ghproxy.com/$orig"
+  echo "$orig"
+}
+
+accept_licenses() {
+  mkdir -p "$SDK_ROOT/licenses" /root/.android
+  touch /root/.android/repositories.cfg
+  printf '%s\n' "24333f8a63b6825ea9c5514f83c2829b004d1fee" \
+    > "$SDK_ROOT/licenses/android-sdk-license"
+  printf '%s\n' \
+    "84831b940964616600abf39817c4ba24" \
+    > "$SDK_ROOT/licenses/android-sdk-preview-license"
+}
+
+install_platform() {
+  api=$1
+  jar="$SDK_ROOT/platforms/android-$api/android.jar"
+  if [ -f "$jar" ]; then
+    echo "platforms;android-$api already present"
+    return 0
+  fi
+  if [ -f "$SDKMANAGER" ]; then
+    echo "Fetching platforms;android-$api via bundled sdkmanager (android.jar only)..."
+    set +e
+    "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platforms;android-$api"
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ] && [ -f "$jar" ]; then
+      return 0
+    fi
+    echo "sdkmanager platforms;android-$api failed (rc=$rc) — trying repository zips" >&2
+  fi
+
+  stage="/tmp/minis-plat-$api-$$"
+  tmpzip="/tmp/minis-plat-$api-$$.zip"
+  mkdir -p "$stage"
+  ok=0
+  for zip in \
+      "platform-${api}_r02.zip" \
+      "platform-${api}_r01.zip" \
+      "platform-${api}-ext19_r01.zip" \
+      "platform-${api}-ext18_r03.zip" \
+      "platform-${api}-ext15_r01.zip" \
+      "platform-${api}-ext14_r03.zip"
+  do
+    set +e
+    curl_first "$tmpzip" \
+      ${SDK_MIRROR:+"$SDK_MIRROR/$zip"} \
+      "https://mirrors.cloud.tencent.com/android/repository/$zip" \
+      "https://mirrors.tuna.tsinghua.edu.cn/android/repository/$zip" \
+      "https://mirrors.ustc.edu.cn/android/repository/$zip" \
+      "https://dl.google.com/android/repository/$zip"
+    cr=$?
+    set -e
+    [ "$cr" -eq 0 ] || continue
+    unzip -qo "$tmpzip" -d "$stage" || { rm -f "$tmpzip"; continue; }
+    if [ -f "$stage/android.jar" ]; then
+      mkdir -p "$SDK_ROOT/platforms/android-$api"
+      cp -a "$stage"/. "$SDK_ROOT/platforms/android-$api"/
+      ok=1
+    elif [ -f "$stage/android-$api/android.jar" ]; then
+      mkdir -p "$SDK_ROOT/platforms"
+      rm -rf "$SDK_ROOT/platforms/android-$api"
+      mv "$stage/android-$api" "$SDK_ROOT/platforms/android-$api"
+      ok=1
+    else
+      for d in "$stage"/*; do
+        if [ -f "$d/android.jar" ]; then
+          mkdir -p "$SDK_ROOT/platforms"
+          rm -rf "$SDK_ROOT/platforms/android-$api"
+          mv "$d" "$SDK_ROOT/platforms/android-$api"
+          ok=1
+          break
+        fi
+      done
+    fi
+    rm -f "$tmpzip"
+    [ "$ok" -eq 1 ] && break
+  done
+  rm -rf "$stage"
+  if [ "$ok" -eq 1 ]; then
+    echo "platforms;android-$api installed from zip"
+    return 0
+  fi
+  echo "platforms;android-$api MISSING (android.jar not installed)" >&2
+  return 1
+}
+
+cmake_post() {
+  _cmake_dest=$1
+  if [ ! -x "$_cmake_dest/bin/ninja" ]; then
+    if command -v ninja >/dev/null 2>&1; then
+      ln -sf "$(command -v ninja)" "$_cmake_dest/bin/ninja"
+    else
+      echo "ninja missing — AGP cmake builds need ninja-build (minis-dev-setup)" >&2
+    fi
+  fi
+  if [ ! -f "$_cmake_dest/source.properties" ]; then
+    printf 'Pkg.UserSrc=false\nPkg.Revision=%s\n' "$CMAKE_VER" > "$_cmake_dest/source.properties"
+  fi
+  chmod +x "$_cmake_dest/bin/"* 2>/dev/null || true
+}
+
+install_one_cmake() {
+  ver=$1
+  dest="$SDK_ROOT/cmake/$ver"
+  if [ -x "$dest/bin/cmake" ]; then
+    echo "CMake $ver already present: $dest"
+    CMAKE_VER=$ver
+    cmake_post "$dest"
+    return 0
+  fi
+  if [ "$GUEST_AARCH64" != 1 ]; then
+    echo "Non-aarch64 host: installing cmake;$ver via sdkmanager"
+    if [ -f "$SDKMANAGER" ]; then
+      "$SDKMANAGER" --sdk_root="$SDK_ROOT" "cmake;$ver" || true
+    fi
+    return 0
+  fi
+  major=${ver%%.*}
+  echo "Installing CMake $ver linux-aarch64 (NOT Google x86_64 cmake package)..."
+  tgz="/tmp/cmake-${ver}-linux-aarch64.tar.gz"
+  tarball="cmake-${ver}-linux-aarch64.tar.gz"
+  set +e
+  curl_first "$tgz" \
+    "https://cmake.org/files/v${major}.0/$tarball" \
+    "https://cmake.org/files/v${ver%.*}/$tarball" \
+    $(github_urls "https://github.com/Kitware/CMake/releases/download/v${ver}/$tarball")
+  cr=$?
+  set -e
+  if [ "$cr" -ne 0 ]; then
+    echo "CMake $ver download failed" >&2
+    return 1
+  fi
+  stage="/tmp/minis-cmake-$$"
+  mkdir -p "$stage"
+  echo "extracting $(basename "$tgz") — PRoot 解大量小文件会比较慢，没有新行也在继续"
+  tar -xzf "$tgz" -C "$stage" --checkpoint=20000 --checkpoint-action='echo=…仍在解包'
+  inner="$stage/cmake-${ver}-linux-aarch64"
+  if [ ! -x "$inner/bin/cmake" ]; then
+    echo "unexpected cmake tarball layout" >&2
+    rm -rf "$stage" "$tgz"
+    return 1
+  fi
+  mkdir -p "$SDK_ROOT/cmake"
+  rm -rf "$dest"
+  mv "$inner" "$dest"
+  rm -rf "$stage" "$tgz"
+  CMAKE_VER=$ver
+  cmake_post "$dest"
+  echo "CMake $ver -> $dest"
+}
+
+install_cmake() {
+  if [ "${MINIS_SKIP_CMAKE:-0}" = "1" ]; then
+    echo "MINIS_SKIP_CMAKE=1 — skipping CMake"
+    return 0
+  fi
+  if install_one_cmake "$CMAKE_VER"; then
+    return 0
+  fi
+  if [ "$CMAKE_VER" != "$CMAKE_FALLBACK" ]; then
+    echo "Falling back to CMake $CMAKE_FALLBACK (AGP-compatible)"
+    install_one_cmake "$CMAKE_FALLBACK"
+  fi
+}
+
+ndk_clang_ok() {
+  dir=$1
+  [ -x "$dir/toolchains/llvm/prebuilt/linux-aarch64/bin/clang" ]
+}
+
+# Pkg.Revision when present; otherwise the sdkmanager directory name.
+# Empty means the tree has no revision we can trust.
+ndk_revision() {
+  dir=$1
+  rev=""
+  if [ -f "$dir/source.properties" ]; then
+    rev=$(awk -F= '/Pkg.Revision/ { gsub(/[ \t]/, "", $2); print $2; exit }' "$dir/source.properties")
+  fi
+  if [ -z "$rev" ]; then
+    base=$(basename "$dir")
+    case "$base" in
+      [0-9]*.[0-9]*.[0-9]*) rev=$base ;;
+    esac
+  fi
+  printf '%s\n' "$rev"
+}
+
+# Ready only when linux-aarch64 clang and the pinned r29 revision match.
+# An existing r28 tree is not success and is not deleted.
+ndk_is_pinned() {
+  dir=$1
+  ndk_clang_ok "$dir" || return 1
+  rev=$(ndk_revision "$dir")
+  [ "$rev" = "$NDK_REV" ]
+}
+
+note_unpinned_ndk() {
+  dir=$1
+  [ -d "$dir" ] || return 0
+  ndk_clang_ok "$dir" || return 0
+  if ndk_is_pinned "$dir"; then
+    return 0
+  fi
+  rev=$(ndk_revision "$dir")
+  echo "Ignoring $dir (revision ${rev:-unknown}); need linux-aarch64 NDK $NDK_REV. Leaving it installed." >&2
+}
+
+find_aarch64_ndk() {
+  if [ -n "${ANDROID_NDK_HOME:-}" ] && ndk_is_pinned "$ANDROID_NDK_HOME"; then
+    echo "$ANDROID_NDK_HOME"
+    return 0
+  fi
+  if [ -d /var/minis/mounts/android-sdk/ndk ]; then
+    for d in /var/minis/mounts/android-sdk/ndk/*; do
+      if ndk_is_pinned "$d"; then echo "$d"; return 0; fi
+    done
+  fi
+  if [ -d "$SDK_ROOT/ndk" ]; then
+    for d in "$SDK_ROOT"/ndk/*; do
+      if ndk_is_pinned "$d"; then echo "$d"; return 0; fi
+    done
+  fi
+  return 1
+}
+
+warn_x86_ndk() {
+  if [ -d "$SDK_ROOT/ndk" ]; then
+    for d in "$SDK_ROOT"/ndk/*; do
+      if [ -x "$d/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ] && ! ndk_clang_ok "$d"; then
+        echo "WARNING: $d is linux-x86_64 NDK — unusable in this aarch64 PRoot guest. Do not sdkmanager \"ndk;…\"." >&2
+      fi
+    done
+  fi
+}
+
+
+extract_sdk_archive() {
+  _xa_archive=$1
+  _xa_out=$2
+  case "$_xa_archive" in
+    *.tar.xz|*.txz)
+      if ! command -v xz >/dev/null 2>&1; then
+        apt-get update || true
+        apt-get install -y --no-install-recommends xz-utils
+      fi
+      echo "extracting $(basename "$_xa_archive") — PRoot 解大量小文件会比较慢，没有新行也在继续"
+      tar -xJf "$_xa_archive" -C "$_xa_out" --checkpoint=20000 --checkpoint-action='echo=…仍在解包'
+      ;;
+    *.tar.gz|*.tgz)
+      echo "extracting $(basename "$_xa_archive") — PRoot 解大量小文件会比较慢，没有新行也在继续"
+      tar -xzf "$_xa_archive" -C "$_xa_out" --checkpoint=20000 --checkpoint-action='echo=…仍在解包'
+      ;;
+    *.zip)
+      echo "extracting $(basename "$_xa_archive") — PRoot 解大量小文件会比较慢，没有新行也在继续"
+      unzip -qo "$_xa_archive" -d "$_xa_out"
+      ;;
+    *)
+      echo "unrecognized NDK archive: $_xa_archive" >&2
+      return 1
+      ;;
+  esac
+}
+
+install_ndk() {
+  if [ "${MINIS_SKIP_NDK:-0}" = "1" ]; then
+    echo "MINIS_SKIP_NDK=1 — skipping NDK $NDK_TAG ($NDK_REV)"
+    return 0
+  fi
+  existing=$(find_aarch64_ndk || true)
+  if [ -n "$existing" ]; then
+    echo "NDK $NDK_REV aarch64 already present: $existing"
+    export ANDROID_NDK_HOME=$existing
+    export ANDROID_NDK_ROOT=$existing
+    return 0
+  fi
+  if [ -n "${ANDROID_NDK_HOME:-}" ]; then
+    note_unpinned_ndk "$ANDROID_NDK_HOME"
+  fi
+  if [ -d "$SDK_ROOT/ndk" ]; then
+    for d in "$SDK_ROOT"/ndk/*; do
+      note_unpinned_ndk "$d"
+    done
+  fi
+  warn_x86_ndk
+  if [ "$GUEST_AARCH64" != 1 ]; then
+    echo "Non-aarch64 host: installing ndk;$NDK_REV via sdkmanager"
+    if [ ! -f "$SDKMANAGER" ]; then
+      echo "sdkmanager missing; cannot install ndk;$NDK_REV" >&2
+      return 1
+    fi
+    "$SDKMANAGER" --sdk_root="$SDK_ROOT" "ndk;$NDK_REV" || return 1
+    if [ ! -d "$SDK_ROOT/ndk/$NDK_REV" ]; then
+      echo "sdkmanager finished but $SDK_ROOT/ndk/$NDK_REV is missing" >&2
+      return 1
+    fi
+    export ANDROID_NDK_HOME=$SDK_ROOT/ndk/$NDK_REV
+    export ANDROID_NDK_ROOT=$SDK_ROOT/ndk/$NDK_REV
+    return 0
+  fi
+
+  echo "Installing NDK ${NDK_TAG} linux-aarch64. Set MINIS_SKIP_NDK=1 to skip."
+  echo "Source: lzhiyong/termux-ndk tag android-ndk (Google NDK host tools are x86_64)."
+  archive="/tmp/minis-ndk-$$"
+  set +e
+  if [ -n "${MINIS_NDK_URL:-}" ]; then
+    case "${MINIS_NDK_URL%%\?*}" in
+      *.tar.xz|*.txz) archive="${archive}.tar.xz" ;;
+      *.tar.gz|*.tgz) archive="${archive}.tar.gz" ;;
+      *.zip) archive="${archive}.zip" ;;
+      *) archive="${archive}.bin" ;;
+    esac
+    curl_first "$archive" "$MINIS_NDK_URL"
+    cr=$?
+  else
+    # Published asset is tag "android-ndk", file android-ndk-<rev>-aarch64.tar.xz.
+    # releases/download/r29/android-ndk-r29-aarch64.zip is 404.
+    archive="${archive}.tar.xz"
+    ndk_file="android-ndk-${NDK_TAG}-aarch64.tar.xz"
+    curl_first "$archive" \
+      $(github_urls "https://github.com/lzhiyong/termux-ndk/releases/download/android-ndk/${ndk_file}")
+    cr=$?
+  fi
+  set -e
+  if [ "$cr" -ne 0 ]; then
+    echo "NDK aarch64 download failed." >&2
+    echo "Expected https://github.com/lzhiyong/termux-ndk/releases/download/android-ndk/android-ndk-${NDK_TAG}-aarch64.tar.xz" >&2
+    echo "Bind-mount an aarch64 NDK or set MINIS_NDK_URL. Do NOT sdkmanager \"ndk;…\" (that package is linux-x86_64)." >&2
+    return 1
+  fi
+  stage="/tmp/minis-ndk-$$"
+  mkdir -p "$stage"
+  extract_sdk_archive "$archive" "$stage"
+  inner=""
+  if ndk_clang_ok "$stage"; then
+    inner=$stage
+  else
+    for d in "$stage"/*; do
+      if ndk_clang_ok "$d"; then inner=$d; break; fi
+    done
+  fi
+  if [ -z "$inner" ]; then
+    echo "NDK archive extracted but linux-aarch64 clang not found" >&2
+    rm -rf "$stage" "$archive"
+    return 1
+  fi
+  rev=$(ndk_revision "$inner")
+  case "$rev" in
+    29.*) ;;
+    "")
+      echo "source.properties missing; installing as pinned $NDK_REV" >&2
+      rev=$NDK_REV
+      ;;
+    *)
+      echo "Downloaded NDK revision $rev is not r29; refusing to install it." >&2
+      rm -rf "$stage" "$archive"
+      return 1
+      ;;
+  esac
+  if [ "$rev" != "$NDK_REV" ]; then
+    echo "Downloaded NDK revision $rev does not match pinned $NDK_REV." >&2
+    rm -rf "$stage" "$archive"
+    return 1
+  fi
+  mkdir -p "$SDK_ROOT/ndk"
+  dest="$SDK_ROOT/ndk/$rev"
+  rm -rf "$dest"
+  mv "$inner" "$dest"
+  rm -rf "$stage" "$archive"
+  export ANDROID_NDK_HOME=$dest
+  export ANDROID_NDK_ROOT=$dest
+  echo "NDK $rev -> $dest"
+}
+
+mkdir -p "$SDK_ROOT"
+
+if [ -d /var/minis/mounts/android-sdk ] && { [ -e /var/minis/mounts/android-sdk/platforms ] || [ -e /var/minis/mounts/android-sdk/cmdline-tools ]; }; then
+  echo "Found user-mounted SDK at /var/minis/mounts/android-sdk — using that."
+  rm -rf "$SDK_ROOT"
+  ln -s /var/minis/mounts/android-sdk "$SDK_ROOT"
+else
+  if [ ! -f "$AAPT2" ]; then
+    echo "Bundled aapt2 not found at $AAPT2"
+    echo "Reinstall the app / re-extract the Ubuntu rootfs, or bind-mount an SDK named android-sdk." >&2
+  else
+    echo "Using bundled aarch64 aapt2: $AAPT2"
+    file "$AAPT2" 2>/dev/null || true
+  fi
+
+  if [ ! -f "$SDKMANAGER" ]; then
+    echo "Bundled sdkmanager not found at $SDKMANAGER"
+    echo "Reinstall the app / re-extract the Ubuntu rootfs." >&2
+  else
+    echo "Using bundled Java sdkmanager: $SDKMANAGER"
+    chmod +x "$SDKMANAGER" 2>/dev/null || true
+  fi
+fi
+
+export ANDROID_HOME="$SDK_ROOT"
+export ANDROID_SDK_ROOT="$SDK_ROOT"
+SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+accept_licenses
+
+plat_ok=1
+install_platform 36 || plat_ok=0
+install_platform 35 || true
+
+cmake_ok=1
+install_cmake || cmake_ok=0
+
+ndk_ok=1
+install_ndk || ndk_ok=0
+
+mkdir -p /root/.gradle
+PROP=/root/.gradle/gradle.properties
+LINE="android.aapt2FromMavenOverride=$SDK_ROOT/build-tools/$BUILD_TOOLS_REV/aapt2"
+touch "$PROP"
+if grep -q '^android.aapt2FromMavenOverride=' "$PROP" 2>/dev/null; then
+  sed -i "s|^android.aapt2FromMavenOverride=.*|$LINE|" "$PROP"
+else
+  echo "$LINE" >> "$PROP"
+fi
+
+if [ "$GUEST_AARCH64" = 1 ]; then
+  NDK_HOME_NOW=$(find_aarch64_ndk || true)
+elif [ -d "$SDK_ROOT/ndk/$NDK_REV" ]; then
+  NDK_HOME_NOW=$SDK_ROOT/ndk/$NDK_REV
+else
+  NDK_HOME_NOW=""
+fi
+NDK_PATH_LINE=""
+NDK_EXPORT=""
+if [ -n "$NDK_HOME_NOW" ]; then
+  NDK_PATH_LINE="export ANDROID_NDK_HOME=$NDK_HOME_NOW"
+  NDK_EXPORT="export ANDROID_NDK_ROOT=$NDK_HOME_NOW"
+fi
+
+cat > /etc/profile.d/minis-android-sdk.sh <<EOF
+export TMPDIR=/tmp
+export TMP=/tmp
+export TEMP=/tmp
+export ANDROID_HOME=$SDK_ROOT
+export ANDROID_SDK_ROOT=$SDK_ROOT
+$NDK_PATH_LINE
+$NDK_EXPORT
+export PATH="\$PATH:\$ANDROID_HOME/cmdline-tools/latest/bin:\$ANDROID_HOME/platform-tools:\$ANDROID_HOME/build-tools/$BUILD_TOOLS_REV:\$ANDROID_HOME/cmake/3.31.6/bin:\$ANDROID_HOME/cmake/3.22.1/bin:\$ANDROID_HOME/cmake/$CMAKE_VER/bin"
+EOF
+
+echo
+echo "ANDROID_HOME=$SDK_ROOT"
+if [ -f "$AAPT2" ]; then
+  echo "aapt2 (aarch64)=$AAPT2"
+else
+  echo "aapt2 MISSING at $AAPT2"
+fi
+if [ -f "$SDKMANAGER" ]; then
+  echo "sdkmanager=$SDKMANAGER"
+else
+  echo "sdkmanager MISSING at $SDKMANAGER"
+fi
+if [ -f "$SDK_ROOT/platforms/android-36/android.jar" ]; then
+  echo "compileSdk 36: $SDK_ROOT/platforms/android-36/android.jar"
+else
+  echo "compileSdk 36: MISSING"
+fi
+if [ -x "$SDK_ROOT/cmake/$CMAKE_VER/bin/cmake" ]; then
+  echo "CMake $CMAKE_VER: $SDK_ROOT/cmake/$CMAKE_VER/bin/cmake"
+else
+  echo "CMake $CMAKE_VER: MISSING"
+fi
+if [ "$GUEST_AARCH64" = 1 ]; then
+  ndk_label="NDK r29 ($NDK_REV) aarch64"
+else
+  ndk_label="NDK r29 ($NDK_REV)"
+fi
+if [ -n "$NDK_HOME_NOW" ]; then
+  echo "$ndk_label: $NDK_HOME_NOW"
+elif [ "${MINIS_SKIP_NDK:-0}" = "1" ]; then
+  echo "$ndk_label: SKIPPED"
+else
+  echo "$ndk_label: MISSING"
+  ndk_ok=0
+fi
+echo "Re-open the shell (or: . /etc/profile.d/minis-android-sdk.sh) to pick up PATH."
+echo "To compile an APK: cd <project> && gradle assembleDebug"
+echo "Never: sdkmanager \"build-tools;…\" / \"cmake;…\" / \"ndk;…\" on this aarch64 guest."
+
+if [ "$plat_ok" -ne 1 ] || [ "$cmake_ok" -ne 1 ] || [ "$ndk_ok" -ne 1 ]; then
+  exit 1
+fi

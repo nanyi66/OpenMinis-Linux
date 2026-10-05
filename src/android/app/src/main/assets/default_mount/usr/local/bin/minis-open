@@ -1,0 +1,122 @@
+#!/bin/sh
+# minis-open — MinisApp URL interceptor for the PRoot sandbox.
+#
+# Stands in for xdg-open / sensible-browser / www-browser / BROWSER, and also
+# doubles as the in-app preview opener for chat resources. Any argument is
+# emitted to stdout wrapped in an OSC 1337 escape sequence that the MinisApp
+# host parses and routes to the appropriate built-in viewer:
+#
+#   * http:// https:// about:*                 → in-app WebView preview
+#   * /var/minis/<host>/<path>  (absolute)     → converted to minis://<host>/<path>
+#     minis://attachments/...  minis://workspace/...  minis://shared/... etc.
+#                                              → routed by extension
+#
+# When stdout is not a TTY (cron / nohup / pipelines) or --system is passed,
+# http(s)/intent/tel/mailto/geo/market URLs go through android-open (NativeOffload)
+# so the host can ACTION_VIEW them without an OSC parser.
+#
+# Protocol: ESC ] 1337 ; MinisOpenURL = <url> BEL
+# Exit 0 always when we emitted something: the caller should believe the
+# viewer was opened.
+
+set -e
+
+ESC=$(printf '\033')
+BEL=$(printf '\007')
+
+emit_marker() {
+    printf '%s]1337;MinisOpenURL=%s%s\n' "$ESC" "$1" "$BEL"
+}
+
+emit() {
+    case "$1" in
+        http://*|https://*|about:*)
+            emit_marker "$1"
+            printf 'Opened in Minis browser: %s\n' "$1"
+            ;;
+        minis://*)
+            emit_marker "$1"
+            printf 'Opened in Minis preview: %s\n' "$1"
+            ;;
+        /var/minis/*)
+            rel="${1#/var/minis/}"
+            case "$rel" in
+                */*)
+                    host="${rel%%/*}"
+                    path="${rel#*/}"
+                    emit_marker "minis://$host/$path"
+                    printf 'Opened in Minis preview: minis://%s/%s\n' "$host" "$path"
+                    ;;
+                *)
+                    printf 'minis-open: not a previewable resource: %s\n' "$1" >&2
+                    return 0
+                    ;;
+            esac
+            ;;
+        *)
+            printf 'minis-open: not a URL or chat resource, ignoring: %s\n' "$1" >&2
+            return 0
+            ;;
+    esac
+}
+
+open_system() {
+    if command -v android-open >/dev/null 2>&1; then
+        android-open "$1"
+    else
+        emit "$1"
+    fi
+}
+
+SYSTEM=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --system|-s)
+            SYSTEM=1
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: minis-open [--system] <url-or-path>" >&2
+            echo "  --system  open http(s)/intent URLs via android-open (NativeOffload)" >&2
+            echo "  url-or-path: http(s)://, minis://, or /var/minis/<host>/<path>" >&2
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            echo "minis-open: unknown option: $1" >&2
+            exit 2
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [ $# -eq 0 ]; then
+    echo "Usage: minis-open [--system] <url-or-path>" >&2
+    echo "  url-or-path: http(s):// URL, minis:// URL, or /var/minis/<host>/<path>" >&2
+    exit 1
+fi
+
+for arg in "$@"; do
+    # Always emit OSC for http(s)/minis so PersistentShell (not a TTY)
+    # still opens the in-app preview. android-open ACTION_VIEW would
+    # leave the Minis UI for Chrome. --system keeps the old path.
+    if [ "$SYSTEM" = 1 ]; then
+        open_system "$arg"
+        continue
+    fi
+    case "$arg" in
+        intent:*|android-app:*|tel:*|mailto:*|geo:*|market:*)
+            open_system "$arg"
+            ;;
+        *)
+            emit "$arg"
+            ;;
+    esac
+done
+
+exit 0

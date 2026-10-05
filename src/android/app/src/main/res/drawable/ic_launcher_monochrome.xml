@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Monochrome (Android 13+ Themed Icons): `>_` silhouette matching the
+     adaptive foreground. Single color; system tints at runtime.
+     All points stay within radius 33 - halfStroke of center (54,54). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path
+        android:pathData="M 37 35 L 64 54 L 37 73"
+        android:strokeColor="#FFFFFF" android:strokeWidth="10"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path
+        android:pathData="M 45 77 L 64 77"
+        android:strokeColor="#FFFFFF" android:strokeWidth="10"
+        android:strokeLineCap="round" />
+</vector>

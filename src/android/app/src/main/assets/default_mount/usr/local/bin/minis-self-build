@@ -1,0 +1,73 @@
+#!/bin/sh
+# In-sandbox APK build. Exits non-zero when no source tree is mounted.
+# If scripts/build_apk_aarch64.sh is found under a bind mount, runs
+# minis-android-sdk-setup and then that script. Do not exit 0 just to
+# say "nothing was built" — that hid the experimental-feature failure.
+set -eu
+
+echo "minis-self-build: experimental in-sandbox APK build"
+echo "A debug-signed APK cannot replace an install signed with a different certificate."
+
+find_tree() {
+  root=$1
+  depth=$2
+  if [ -f "$root/scripts/build_apk_aarch64.sh" ]; then
+    printf '%s\n' "$root"
+    return 0
+  fi
+  if [ "$depth" -le 0 ] || [ ! -d "$root" ]; then
+    return 1
+  fi
+  for child in "$root"/*; do
+    [ -d "$child" ] || continue
+    base=$(basename "$child")
+    case "$base" in
+      .git|node_modules|build|.gradle|dist|out) continue ;;
+    esac
+    if found=$(find_tree "$child" $((depth - 1))); then
+      printf '%s\n' "$found"
+      return 0
+    fi
+  done
+  return 1
+}
+
+ROOT=""
+for start in /var/minis/workspace /var/minis/mounts /root /home /opt /tmp; do
+  [ -d "$start" ] || continue
+  if found=$(find_tree "$start" 4); then
+    ROOT=$found
+    break
+  fi
+done
+
+if [ -z "$ROOT" ]; then
+  echo "minis-self-build: no mounted source tree containing scripts/build_apk_aarch64.sh" >&2
+  echo "Mount the OpenMinis tree under workspace or /var/minis/mounts and retry." >&2
+  exit 1
+fi
+
+echo "minis-self-build: source $ROOT"
+export TMPDIR="${TMPDIR:-/tmp}"
+mkdir -p /tmp
+export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"
+export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+
+if [ -x /usr/local/bin/minis-android-sdk-setup ]; then
+  echo "minis-self-build: running minis-android-sdk-setup"
+  /usr/local/bin/minis-android-sdk-setup
+fi
+if [ -f /etc/profile.d/minis-android-sdk.sh ]; then
+  # shellcheck disable=SC1091
+  . /etc/profile.d/minis-android-sdk.sh
+fi
+export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"
+export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+
+if ! command -v bash >/dev/null 2>&1; then
+  echo "minis-self-build: bash is required to run scripts/build_apk_aarch64.sh" >&2
+  exit 1
+fi
+
+echo "minis-self-build: building via $ROOT/scripts/build_apk_aarch64.sh"
+exec bash "$ROOT/scripts/build_apk_aarch64.sh"
