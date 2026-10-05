@@ -1,6 +1,7 @@
 package com.openminis.app.security
 
 import android.content.Context
+import com.openminis.app.logging.AppLogger
 import com.openminis.app.notification.ApprovalNotifier
 import com.openminis.app.service.ApprovalGate
 import com.openminis.app.tools.ToolExecutionResult
@@ -75,6 +76,24 @@ object SecurityGateHolder {
         else activeSessionModes[sessionId] ?: PermissionMode.ASK
 
     fun setRules(context: Context, rules: List<PermissionRule>) {
+        // [T-prefixrule-pattern-tokenize] Save-time validation: a prompt /
+        // forbidden pattern must produce a non-empty token sequence under the
+        // SAME quote-aware tokenizer the matcher uses (tokenizeCommand), or
+        // the rule can never hit — the user believes it is enforced while it
+        // silently never fires. Deliberately NOT rejected here (dropping a
+        // persisted rule on save would silently discard user config); it is
+        // logged loudly instead, and the matcher already ignores it.
+        for (r in rules) {
+            val action = r.action.lowercase()
+            if (action != "prompt" && action != "forbidden") continue
+            if (tokenizeCommand(r.pattern).isEmpty()) {
+                AppLogger.warning(
+                    "SecurityGate",
+                    "permission rule can never match: action=$action " +
+                        "toolFilter=${r.toolFilter} pattern='${r.pattern}'",
+                )
+            }
+        }
         gate.setPermissionRules(rules)
         val arr = JSONArray()
         for (r in rules) {

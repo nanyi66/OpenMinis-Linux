@@ -211,4 +211,32 @@ val z = 1"""
         )
         assertTrue("Expected failure (multiple non-unique matches)", result is TextReplacers.Result.Failure)
     }
+
+    // ── [T-crlf-cross] CRLF files edited with LF patterns ──
+
+    @Test
+    fun crlfFileMatchesMultiLineLfPatternAtLineTrimmedLevel() {
+        // Windows files store CRLF; models emit old_string with LF. The exact
+        // tier cannot match, and the line-trimmed tier must catch it instead
+        // of reporting not-found (splitLines strips the CR, matchesBlock
+        // compares trimmed text). Replacing within the matched lines must
+        // leave the untouched lines' CRLF endings intact — the replacement
+        // range stops before the line terminator.
+        val content = "first\r\nsecond\r\nthird\r\n"
+        val result = TextReplacers.replace(content, "first\nsecond", "REPLACED")
+        assertTrue("CRLF content must match an LF pattern", result is TextReplacers.Result.Success)
+        val success = result as TextReplacers.Result.Success
+        assertEquals(1, success.count)
+        assertEquals("REPLACED\r\nthird\r\n", success.newContent)
+    }
+
+    @Test
+    fun crlfFileMatchesSingleLineLfNeedleAtExactLevel() {
+        // A single-line LF needle is a plain substring of the CRLF file, so
+        // the exact tier still fires and the terminator is untouched.
+        val content = "first\r\nsecond\r\nthird\r\n"
+        val result = TextReplacers.replace(content, "second", "REPLACED")
+        assertTrue(result is TextReplacers.Result.Success)
+        assertEquals("first\r\nREPLACED\r\nthird\r\n", (result as TextReplacers.Result.Success).newContent)
+    }
 }
