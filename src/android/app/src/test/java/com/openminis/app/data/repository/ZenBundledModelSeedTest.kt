@@ -90,17 +90,54 @@ class ZenBundledModelSeedTest {
     }
 
     @Test
-    fun `bundled models all survive the live-refresh free-lane filter`() {
-        // fetchModels for Zen instances keeps only big-pickle / *free* ids.
-        // If a bundled model id failed that predicate, a later live refresh
+    fun `bundled models all survive the live-refresh filter`() {
+        // If a bundled model id failed zenVisibleModels, a later live refresh
         // would visibly REMOVE it right after the seed added it.
         val ids = bundledZenModels().map { it.id }
-        assertEquals(1, ids.size)
         for (id in ids) {
             assertTrue(
                 "bundled model '$id' would be dropped by the refresh filter",
-                id == "big-pickle" || id.contains("-free", ignoreCase = true),
+                zenVisibleModels(listOf(LLMModel(id, id, "OpenCode Zen"))).isNotEmpty(),
             )
         }
+    }
+
+    /** [T-zen-usable-free-lane] The visible list IS the usable list. */
+    @Test
+    fun `zenVisibleModels drops free-lane ids the upstream refuses`() {
+        // Live-measured 2026-10-05: these ids answer 403 FreeTierError /
+        // RegionError / 500 on the first call — showing them is what made the
+        // user pick a model that can never work.
+        val dead = listOf(
+            "big-pickle", "ling-3.1-flash-free", "fledge-alpha-free",
+            "mimo-v2.5-free", "mimo-v2.6-flash-free", "longcat-2.5-preview-free",
+            "ling-3.0-flash-fin-free", "nemotron-3-ultra-free",
+            "nemotron-3.5-lightning-free", "muse-spark-1.3-contributor-free",
+            "jev-1.13-free", "deepseek-v4-flash-free",
+        )
+        val catalog = dead.map { LLMModel(it, it, "OpenCode Zen") } + bundledZenModels()
+        val visible = zenVisibleModels(catalog)
+        assertEquals(bundledZenModels().map { it.id }, visible.map { it.id })
+    }
+
+    @Test
+    fun `zenVisibleModels drops paid-lane rows a keyless instance cannot drive`() {
+        val catalog = listOf(
+            LLMModel("claude-something", "Claude", "OpenCode Zen"),
+            LLMModel("gpt-something", "GPT", "OpenCode Zen"),
+        ) + bundledZenModels()
+        assertEquals(bundledZenModels().map { it.id }, zenVisibleModels(catalog).map { it.id })
+    }
+
+    @Test
+    fun `zenStaleEntryIds marks only this instance's entries outside the usable set`() {
+        val entries = listOf(
+            entry("zen-1", "big-pickle"),          // 403 FreeTierError — dead
+            entry("zen-1", "space-bunny-free"),    // usable — must survive
+            entry("zen-1", "claude-x"),            // paid lane — dead for keyless
+            entry("other-1", "big-pickle"),        // different instance — untouchable
+        )
+        val stale = zenStaleEntryIds("zen-1", entries)
+        assertEquals(setOf(entries[0].id, entries[2].id), stale)
     }
 }
