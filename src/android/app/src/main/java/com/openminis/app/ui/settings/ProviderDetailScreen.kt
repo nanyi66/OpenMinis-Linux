@@ -132,6 +132,9 @@ fun ProviderDetailScreen(
     // [T-provider-custom-user-agent] Per-provider UA override input. Only the
     // OpenAI-/Anthropic-compat custom-base section surfaces it (see gate below).
     var customUserAgent by remember { mutableStateOf(instance.customUserAgent ?: "") }
+    // [T-provider-custom-headers] Per-provider extra headers input, one
+    // "Key: Value" per line. Same gate as the UA override below.
+    var customHeaders by remember { mutableStateOf(instance.customHeaders ?: "") }
 
     val entries = providerRepository.entriesFor(instanceId)
     var isRefreshing by remember { mutableStateOf(false) }
@@ -331,6 +334,31 @@ fun ProviderDetailScreen(
                         thickness = 0.5.dp,
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
                     )
+                    // [T-provider-custom-headers] Custom HTTP headers input —
+                    // one "Key: Value" per line, parsed at request build time.
+                    // Blank → no extra headers. # lines and empty lines are
+                    // skipped by the parser; a line without ':' is skipped too.
+                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        Text(
+                            text = stringResource(R.string.provider_detail_custom_headers),
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        SectionTextField(
+                            value = customHeaders,
+                            onValueChange = { customHeaders = it },
+                            singleLine = false,
+                            maxLines = 6,
+                            placeholder = stringResource(R.string.provider_detail_custom_headers_placeholder),
+                            fieldModifier = Modifier
+                                .bringIntoViewOnFocus()
+                                .heightIn(min = 88.dp),
+                        )
+                    }
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        thickness = 0.5.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                    )
                 }
                 // Save action — TextButton presentation so it reads as a list
                 // row rather than a floating filled button inside the card.
@@ -345,13 +373,18 @@ fun ProviderDetailScreen(
                                 // this; for others customUserAgent equals the
                                 // unchanged instance value, so the copy is inert.
                                 customUserAgent = customUserAgent.ifBlank { null },
+                                // [T-provider-custom-headers] Blank → null → no
+                                // extra headers. Kept raw (one Key: Value per
+                                // line); parsed at request build time.
+                                customHeaders = customHeaders.ifBlank { null },
                             )
                         )
                         AppLogger.info(
                             TAG,
                             "Saved base URL for ${instance.id}: " +
                                 "url='${customBaseURL.ifBlank { "<default>" }}', appendV1=$appendV1Suffix, " +
-                                "ua='${customUserAgent.ifBlank { "<default>" }}'",
+                                "ua='${customUserAgent.ifBlank { "<default>" }}', " +
+                                "headers='${customHeaders.ifBlank { "<none>" }}'",
                         )
                     },
                     modifier = Modifier.fillMaxWidth(),

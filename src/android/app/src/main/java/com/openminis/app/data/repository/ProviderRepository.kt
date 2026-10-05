@@ -2238,6 +2238,8 @@ class ProviderRepository(private val context: Context) {
                         forceRefresh = liveForce,
                         // [T-provider-custom-user-agent] models-list UA override.
                         customUserAgent = instance.customUserAgent,
+                        // [T-provider-custom-headers] models-list extra headers.
+                        extraHeaders = com.openminis.app.provider.parseCustomHeaders(instance.customHeaders),
                         cacheScope = instance.id,
                     )
                     ProviderType.gemini -> GeminiModelsApi.fetchModels(
@@ -2252,7 +2254,7 @@ class ProviderRepository(private val context: Context) {
                     // models from the same /v1/models endpoint — only the
                     // completion endpoint differs.
                     ProviderType.openAI, ProviderType.openAIResponses ->
-                        OpenAIModelsApi.fetchModels(apiKey, baseURL, context = context, forceRefresh = liveForce, customUserAgent = if (isZenInstance(instance)) com.openminis.app.provider.ZenDisguise.userAgent() else instance.customUserAgent, cacheScope = instance.id)
+                        OpenAIModelsApi.fetchModels(apiKey, baseURL, context = context, forceRefresh = liveForce, customUserAgent = if (isZenInstance(instance)) com.openminis.app.provider.ZenDisguise.userAgent() else instance.customUserAgent, extraHeaders = com.openminis.app.provider.parseCustomHeaders(instance.customHeaders), cacheScope = instance.id)
                             .let { models -> if (isZenInstance(instance)) zenVisibleModels(models) else models }
                     ProviderType.openRouter -> OpenRouterModelsApi.fetchModels(apiKey, context = context, forceRefresh = liveForce, cacheScope = instance.id)
                     // [T-provider-dynamic-catalog-reconcile] xAI: fetch the live
@@ -2293,6 +2295,7 @@ class ProviderRepository(private val context: Context) {
                         context = context,
                         forceRefresh = liveForce,
                         customUserAgent = instance.customUserAgent,
+                        extraHeaders = com.openminis.app.provider.parseCustomHeaders(instance.customHeaders),
                         cacheScope = instance.id,
                     ).ifEmpty { com.openminis.app.provider.xai.XAIModelsApi.fetchModelsOAuth() }
                     // [T-kimi-oauth] Kimi Code: unlike Codex OAuth, the Kimi
@@ -2306,6 +2309,7 @@ class ProviderRepository(private val context: Context) {
                         context = context,
                         forceRefresh = liveForce,
                         customUserAgent = instance.customUserAgent,
+                        extraHeaders = com.openminis.app.provider.parseCustomHeaders(instance.customHeaders),
                         cacheScope = instance.id,
                     )
                     // [T-android-provider-type-parity] No models endpoint to

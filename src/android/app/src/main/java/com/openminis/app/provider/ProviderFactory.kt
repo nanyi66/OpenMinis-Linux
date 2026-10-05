@@ -121,7 +121,7 @@ object ProviderFactory {
                 val isOAuth = instance.credentialType == ProviderCredential.oauth
                 // [T-provider-custom-user-agent] Only meaningful for custom-base
                 // (relay) instances; on the official direct path it's null.
-                if (basePath != null) AnthropicProvider(apiKey, model, basePath, isOAuth = isOAuth, customUserAgent = instance.customUserAgent)
+                if (basePath != null) AnthropicProvider(apiKey, model, basePath, isOAuth = isOAuth, customUserAgent = instance.customUserAgent, extraHeaders = parseCustomHeaders(instance.customHeaders))
                 else AnthropicProvider(apiKey, model, isOAuth = isOAuth)
             }
             ProviderType.gemini -> {
@@ -177,6 +177,10 @@ object ProviderFactory {
                         // /responses for custom-base OpenAI-compat relays; null
                         // on the official direct path.
                         customUserAgent = instance.customUserAgent,
+                        // [T-provider-custom-headers] Extra headers ride the
+                        // same extraHeaders slot OpenRouter uses — replace
+                        // semantics, applied after provider defaults.
+                        extraHeaders = parseCustomHeaders(instance.customHeaders),
                         // [T-android-azure-openai] Azure auths with api-key +
                         // deployments-path URL. Pass the RAW customBaseURL (not
                         // the /v1-appended, query-stripped effectiveBaseURL) so

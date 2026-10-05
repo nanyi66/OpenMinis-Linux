@@ -92,6 +92,9 @@ object OpenAIModelsApi {
         // [T-provider-custom-user-agent] Per-provider UA override; null/blank
         // keeps the default UA. Threaded from ProviderRepository.refreshModels.
         customUserAgent: String? = null,
+        // [T-provider-custom-headers] Extra headers on the models-list request,
+        // applied after the UA override so a custom entry wins.
+        extraHeaders: Map<String, String> = emptyMap(),
         cacheScope: String = "",
     ): List<LLMModel> = withContext(Dispatchers.IO) {
         val isCustomBase = baseURL != null && !isOfficialOpenAI(baseURL)
@@ -110,6 +113,13 @@ object OpenAIModelsApi {
             .header("Authorization", "Bearer $apiKey")
             // [T-provider-custom-user-agent] models-list UA override.
             .applyUserAgentOverride(customUserAgent)
+            // [T-provider-custom-headers] Applied last so a custom header
+            // deliberately replaces any default on the models request.
+            .let { builder ->
+                var b = builder
+                for ((key, value) in extraHeaders) b = b.header(key, value)
+                b
+            }
             .let { ModelListFetchIsolation.run { it.noStoreIf(forceRefresh) } }
             .build()
 

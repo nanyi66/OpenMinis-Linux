@@ -36,7 +36,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ProviderConfigMetaEntity::class,
         ProviderThinkingRuleEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = false,
 )
 abstract class ProviderDatabase : RoomDatabase() {
@@ -110,6 +110,19 @@ abstract class ProviderDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * [T-provider-custom-headers] Add the extra custom HTTP headers column.
+         * Pure additive nullable TEXT ALTER — existing rows read back null ==
+         * no extra headers. Mirrors the custom_user_agent column shape (also in
+         * the initial v1 schema); follow the same "null/blank → no-op" rule in
+         * the parser so nothing changes for existing providers.
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.addColumnIfMissing("provider_instances", "custom_headers", "TEXT")
+            }
+        }
+
         fun getInstance(context: Context): ProviderDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -117,7 +130,7 @@ abstract class ProviderDatabase : RoomDatabase() {
                     ProviderDatabase::class.java,
                     "provider.db",
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build()
                     .also { INSTANCE = it }
             }

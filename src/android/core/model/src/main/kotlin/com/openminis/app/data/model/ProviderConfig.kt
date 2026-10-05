@@ -229,6 +229,15 @@ data class ProviderInstance(
     // compat providers. Field name matches iOS for cross-platform
     // export/import interop.
     var customUserAgent: String? = null,
+    // [T-provider-custom-headers] Optional extra HTTP headers, one "Key: Value"
+    // pair per line, applied to every outbound request for this instance
+    // (chat / models / responses). Blank → no extra headers. Lines starting
+    // with '#' or empty lines are skipped; a line without ':' is skipped.
+    // Values are applied after the User-Agent override so a header here can
+    // deliberately replace any default (e.g. Authorization on a relay that
+    // needs a different auth scheme). Only surfaced in the UI for custom-base
+    // OpenAI-/Anthropic-compat providers, mirroring customUserAgent.
+    var customHeaders: String? = null,
     // OpenAI-only: when true, traffic goes through /v1/responses instead of
     // /v1/chat/completions. Mirrors iOS `ProviderType.openAIResponses` flag,
     // but modeled here as a switch on the instance so an existing OpenAI

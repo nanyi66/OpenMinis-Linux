@@ -1222,6 +1222,8 @@
     <string name="provider_detail_auto_append_v1">自动追加 /v1</string>
     <string name="provider_detail_custom_user_agent">自定义 User-Agent</string>
     <string name="provider_detail_custom_user_agent_placeholder">留空使用默认值</string>
+    <string name="provider_detail_custom_headers">自定义 Headers</string>
+    <string name="provider_detail_custom_headers_placeholder">每行一个 \"Key: Value\"\n# 开头的行会被跳过</string>
     <string name="provider_detail_save_url_settings">保存 URL 设置</string>
     <string name="provider_detail_api_format">API Format</string>
     <string name="provider_detail_api_format_footer_chat">标准的 /v1/chat/completions 格式，兼容大多数 OpenAI 兼容服务。</string>

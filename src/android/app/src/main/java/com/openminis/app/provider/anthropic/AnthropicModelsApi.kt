@@ -38,6 +38,9 @@ object AnthropicModelsApi {
         // [T-provider-custom-user-agent] Per-provider UA override; null/blank
         // keeps the default UA. Threaded from ProviderRepository.refreshModels.
         customUserAgent: String? = null,
+        // [T-provider-custom-headers] Extra headers on the models-list request,
+        // applied after the UA override so a custom entry wins.
+        extraHeaders: Map<String, String> = emptyMap(),
         cacheScope: String = "",
     ): List<LLMModel> = withContext(Dispatchers.IO) {
         // Cache key: base URL included so the same API key across proxies doesn't
@@ -84,16 +87,22 @@ object AnthropicModelsApi {
                 .applyUserAgentOverride(customUserAgent)
 
             if (isOAuth) {
-                // OAuth: Bearer token + required beta header (mirrors iOS fetchModels(oauthToken:))
-                requestBuilder.header("Authorization", "Bearer $apiKey")
-                requestBuilder.header("anthropic-beta", "oauth-2025-04-20")
-            } else if (candidate != null) {
-                // Custom endpoint: Bearer auth
-                requestBuilder.header("Authorization", "Bearer $apiKey")
-            } else {
-                // Standard Anthropic API key
-                requestBuilder.header("x-api-key", apiKey)
-            }
+                            // OAuth: Bearer [REDACTED] + required beta header (mirrors iOS fetchModels(oauthToken=[REDACTED]
+                            requestBuilder.header("Authorization", "Bearer $apiKey")
+                            requestBuilder.header("anthropic-beta", "oauth-2025-04-20")
+                        } else if (candidate != null) {
+                            // Custom endpoint: Bearer [REDACTED]
+                            requestBuilder.header("Authorization", "Bearer $apiKey")
+                        } else {
+                            // Standard Anthropic API key
+                            requestBuilder.header("x-api-key", apiKey)
+                        }
+
+                        // [T-provider-custom-headers] Applied last so a custom header
+                        // deliberately replaces any default on the models request.
+                        for ((key, value) in extraHeaders) {
+                            requestBuilder.header(key, value)
+                        }
 
             val request = ModelListFetchIsolation.run { requestBuilder.noStoreIf(forceRefresh) }.build()
             android.util.Log.d("AnthropicModels", "Fetching models (level=$idx): ${request.url} isOAuth=$isOAuth headers=${request.headers}")

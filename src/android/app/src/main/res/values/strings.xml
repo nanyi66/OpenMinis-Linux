@@ -1322,6 +1322,8 @@
     <string name="provider_detail_auto_append_v1">Auto-append /v1</string>
     <string name="provider_detail_custom_user_agent">Custom User-Agent</string>
     <string name="provider_detail_custom_user_agent_placeholder">Leave blank for default</string>
+    <string name="provider_detail_custom_headers">Custom Headers</string>
+    <string name="provider_detail_custom_headers_placeholder">One \"Key: Value\" per line\n# comment lines skipped</string>
     <string name="provider_detail_save_url_settings">Save URL Settings</string>
     <string name="provider_detail_api_format">API Format</string>
     <string name="provider_detail_api_format_footer_chat">Standard /v1/chat/completions format. Compatible with most OpenAI-compatible services.</string>

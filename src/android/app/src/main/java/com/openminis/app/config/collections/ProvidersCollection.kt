@@ -60,6 +60,7 @@ class ProvidersCollection(
             useResponsesAPI(forId),
             azureMode(forId),
             customUserAgent(forId),
+            customHeadersField(forId),
             apiKeyField(forId),
             // OAuth token stays fully hidden — the flow is browser-driven
             // and can't be expressed as a single value.
@@ -346,6 +347,30 @@ class ProvidersCollection(
                     throw ConfigError.InvalidValue("Custom User-Agent is only supported for third-party API-key providers. OAuth providers (Anthropic/Codex) use their own authentication UA and cannot be overridden.")
                 }
                 mutate(id) { it.copy(customUserAgent = s.ifEmpty { null }) }
+            },
+        )
+
+    /**
+     * [T-provider-custom-headers] Per-provider extra HTTP headers, one
+     * "Key: Value" per line. Blank clears them. Raw text is stored verbatim
+     * and parsed at request build time (see parseCustomHeaders); a write here
+     * takes effect on the very next outbound call without any restart.
+     */
+    private fun customHeadersField(id: String): ConfigField =
+        ClosureField(
+            path = "providers.$id.customHeaders",
+            displayName = "Custom Headers",
+            description = "Extra HTTP headers applied to every request for this provider, one 'Key: Value' per line. Lines starting with # or empty lines are skipped. Blank = none.",
+            valueSchema = ConfigSchema.Str(maxLength = 4096),
+            risk = ConfigRisk.NORMAL,
+            revertable = true,
+            reader = {
+                val inst = repo.instance(id) ?: return@ClosureField ConfigValue.Null
+                ConfigValue.Str(inst.customHeaders ?: "")
+            },
+            writer = { v ->
+                val s = (v as? ConfigValue.Str)?.value ?: throw ConfigError.TypeMismatch("string")
+                mutate(id) { it.copy(customHeaders = s.ifEmpty { null }) }
             },
         )
 

@@ -50,6 +50,13 @@ class AnthropicProvider(
      * request. Only set for custom-base Anthropic-compat instances.
      */
     private val customUserAgent: String? = null,
+    /**
+     * [T-provider-custom-headers] Extra headers applied verbatim on every
+     * outbound request AFTER the User-Agent override and the provider's
+     * own auth/beta headers, so a custom entry can deliberately replace
+     * any default. Empty map → no extra headers.
+     */
+    private val extraHeaders: Map<String, String> = emptyMap(),
     private val oauthIdentifierPromptProvider: () -> String = {
         com.openminis.app.auth.ClaudeOAuthManager.ANTHROPIC_OAUTH_IDENTIFIER_PROMPT
     },
@@ -1062,6 +1069,12 @@ class AnthropicProvider(
             customUserAgent,
             defaultUserAgent = if (isOAuth) null else com.openminis.app.provider.MinisUserAgent.DEFAULT,
         )
+        // [T-provider-custom-headers] Applied last so a custom header can
+        // deliberately replace any default (auth, beta, UA — whatever the
+        // user typed). Empty map is a no-op.
+        for ((key, value) in extraHeaders) {
+            builder.header(key, value)
+        }
         return builder.build()
     }
 
