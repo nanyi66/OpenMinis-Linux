@@ -516,6 +516,9 @@
     <string name="about_links">Links</string>
     <string name="about_github_repository">GitHub Repository</string>
     <string name="about_version_format">Version %1$s (%2$s)</string>
+    <string name="about_build_commit">Build %1$s</string>
+    <string name="about_build_dirty">dirty</string>
+    <string name="about_commit_copied">Copied</string>
 
     <!-- T172 — chat sheets i18n (MoveToSessionSheet / OffloadPermissionDialog /
          SessionSkillsSheet / SpeechLanguagePickerSheet / StandardChatSheet /

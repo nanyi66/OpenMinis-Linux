@@ -3,6 +3,8 @@ package com.openminis.app.ui.settings
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,16 +19,21 @@ import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import com.openminis.app.ProjectRepo
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -38,9 +45,11 @@ import com.openminis.app.ui.components.openExternalUrl
 @Composable
 fun AboutScreen(onBack: () -> Unit) {
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val tileBlue = Color(0xFF007AFF)
+    var commitCopied by remember { mutableStateOf(false) }
 
-    SettingsScaffold(title = stringResource(R.string.about_title), onBack = null) {
+    SettingsScaffold(title = stringResource(R.string.about_title), onBack = onBack) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -87,6 +96,28 @@ fun AboutScreen(onBack: () -> Unit) {
                 ),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            // Build provenance — which commit this APK came from. Tapping
+            // copies the full SHA (with the dirty marker) for bug reports.
+            val gitSha = BuildConfig.GIT_SHA
+            val shaShort = if (gitSha.length > 7) gitSha.take(7) else gitSha
+            val dirty = BuildConfig.GIT_DIRTY
+            Text(
+                text = if (commitCopied) {
+                    stringResource(R.string.about_commit_copied)
+                } else {
+                    stringResource(R.string.about_build_commit, shaShort) +
+                        if (dirty) " · ${stringResource(R.string.about_build_dirty)}" else ""
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) {
+                    clipboard.setText(AnnotatedString(gitSha + if (dirty) "-dirty" else ""))
+                    commitCopied = true
+                },
             )
             Text(
                 stringResource(R.string.about_minis_tagline),

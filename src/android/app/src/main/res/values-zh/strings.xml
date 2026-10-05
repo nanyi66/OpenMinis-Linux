@@ -474,6 +474,9 @@
     <string name="about_links">链接</string>
     <string name="about_github_repository">GitHub 仓库</string>
     <string name="about_version_format">版本 %1$s (%2$s)</string>
+    <string name="about_build_commit">构建 %1$s</string>
+    <string name="about_build_dirty">工作区有改动</string>
+    <string name="about_commit_copied">已复制</string>
     <string name="move_to_sheet_title">移动到…</string>
     <string name="move_to_sheet_empty">没有其他可用的会话。</string>
     <string name="move_to_sheet_untitled">未命名会话</string>
