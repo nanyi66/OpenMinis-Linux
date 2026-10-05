@@ -95,7 +95,7 @@ class ZenBundledModelSeedTest {
         // If a bundled model id failed that predicate, a later live refresh
         // would visibly REMOVE it right after the seed added it.
         val ids = bundledZenModels().map { it.id }
-        assertEquals(4, ids.size)
+        assertEquals(1, ids.size)
         for (id in ids) {
             assertTrue(
                 "bundled model '$id' would be dropped by the refresh filter",

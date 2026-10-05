@@ -2543,12 +2543,17 @@ enum class ModelRefreshResult {
 /** Bundled OpenCode Zen endpoint — single source for seed/patch/matching. */
 internal const val ZEN_BUNDLED_ENDPOINT = "https://opencode.ai/zen/v1"
 
-/** Free-lane models bundled with the app for the Zen endpoint. */
+/**
+ * Free-lane models bundled with the app for the Zen endpoint. The bundle is
+ * the out-of-box floor: only ids measured to actually serve third-party
+ * clients belong here. Measured 2026-10-05: space-bunny-free was the sole
+ * survivor of the 14-id free lane — 9 ids answer 403 FreeTierError (Console
+ * upstream serves those only to the official OpenCode client), the rest 5xx
+ * or "model unavailable". The live refresh replaces this with the full
+ * catalogue on first success.
+ */
 internal fun bundledZenModels(): List<LLMModel> = listOf(
-    LLMModel("big-pickle", "Big Pickle (Free)", "OpenCode Zen", 262144, 32768, true, inputModalities = listOf("text", "image")),
-    LLMModel("mimo-v2.6-flash-free", "MiMo v2.6 Flash Free", "OpenCode Zen", 128000, 8192, true),
-    LLMModel("ling-3.0-flash-fin-free", "Ling 3.0 Flash Finance Free", "OpenCode Zen", 128000, 8192),
-    LLMModel("nemotron-3-ultra-free", "Nemotron 3 Ultra Free", "OpenCode Zen", 128000, 4096, true),
+    LLMModel("space-bunny-free", "Space Bunny (Free)", "OpenCode Zen", 128000, 8192, true),
 )
 
 /**
