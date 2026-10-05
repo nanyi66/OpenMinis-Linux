@@ -52,7 +52,11 @@ object UpdateVersionLogic {
     }
 
     fun parseVersionCodeFromBody(body: String): Int? {
-        return Regex("""(?im)(?:^|\b)versionCode\s*[:=]\s*(\d+)""")
+        // Separator class includes U+FF1A (full-width colon): the rolling
+        // CI body writes `- versionCode：239`, and the ASCII-only class
+        // silently returned null, which pushed every decision onto the
+        // asset-timestamp heuristic below.
+        return Regex("""(?im)(?:^|\b)versionCode\s*[:=：]\s*(\d+)""")
             .find(body)
             ?.groupValues
             ?.get(1)
@@ -60,7 +64,7 @@ object UpdateVersionLogic {
     }
 
     fun parseVersionNameFromBody(body: String): String? {
-        return Regex("""(?im)(?:^|\b)versionName\s*[:=]\s*`?([0-9][0-9A-Za-z.+_-]*)`?""")
+        return Regex("""(?im)(?:^|\b)versionName\s*[:=：]\s*`?([0-9][0-9A-Za-z.+_-]*)`?""")
             .find(body)
             ?.groupValues
             ?.get(1)
@@ -98,7 +102,15 @@ object UpdateVersionLogic {
             if (bodyVer != null && compareVersions(bodyVer, localVer) > 0) return true
             if (bodyCode == null) {
                 val apkName = bodyVer ?: normalizeTag(c.versionName)
-                if (c.apkUpdatedAtMs > 0L &&
+                // Fail closed unless the name actually looks like a version.
+                // Without this guard, a rolling body we cannot parse yields
+                // apkName == "android", which lexicographically beats every
+                // digit-leading local version ("a" > "2") — the timestamp
+                // alone then falsely claims an update for users already on
+                // the newest build.
+                val versionLike = apkName.firstOrNull()?.isDigit() == true
+                if (versionLike &&
+                    c.apkUpdatedAtMs > 0L &&
                     localLastUpdateMs > 0L &&
                     c.apkUpdatedAtMs > localLastUpdateMs + ROLLING_SLOP_MS &&
                     compareVersions(apkName, localVer) > 0
@@ -143,14 +155,20 @@ object UpdateVersionLogic {
     fun highestPublished(candidates: List<ReleaseCandidate>): ReleaseCandidate? {
         val semver = candidates.filter { !isRollingTag(it.tagName) }
         val pool = semver.ifEmpty { candidates }
-        return pool.maxWithOrNull(compareBy { compareVersions(it.versionName, "0") })
+        // Pairwise comparison, NOT a score against "0": ranking everyone
+        // against a constant collapses e.g. both "1.0" and "1.0.1" to the
+        // same score (first component decides and both beat 0), so the
+        // winner depended on list order rather than the version ordering.
+        return pool.maxWithOrNull(Comparator { a, b ->
+            compareVersions(a.versionName, b.versionName)
+        })
     }
 
     /** Drop CI metadata lines so the dialog can show real release notes. */
     fun stripReleaseMetadata(body: String): String {
         if (body.isBlank() || body.equals("null", ignoreCase = true)) return ""
         val metadata = Regex(
-            """(?i)^\s*(?:[-*]\s*)?(?:versionCode|versionName|applicationId)\s*[:=].*$""",
+            """(?i)^\s*(?:[-*]\s*)?(?:versionCode|versionName|applicationId)\s*[:=：].*$""",
         )
         return body.replace("\r\n", "\n")
             .lineSequence()
@@ -178,6 +196,11 @@ object UpdateVersionLogic {
             else stripReleaseMetadata(other.changelog).takeIf { it.isNotBlank() }
         }
         return when {
+            // The rolling body is CI boilerplate by construction — it is
+            // never curated notes. When a same-version tagged release exists,
+            // its notes are the honest changelog even if the boilerplate
+            // happens to be longer than the 80-char heuristic.
+            isRollingTag(chosen.tagName) -> sibling ?: own
             own.length >= 80 -> own
             sibling != null && sibling.length > own.length -> sibling
             own.isNotBlank() -> own

@@ -9,6 +9,22 @@ import org.junit.Test
 
 class UpdateVersionLogicTest {
 
+    // The verbatim CI body of the android-latest rolling release fetched
+    // 2026-10-05 (versionName 2.0.39 / versionCode 239). Note the full-width
+    // colons — the ASCII-only parsers returned null against this exact text,
+    // which pushed every upgrade decision onto the asset-timestamp heuristic.
+    private val LIVE_ROLLING_BODY = """
+        来自 `6b9ebdcf06c2ec53836e643fc6f3e6a7207d886b` 的滚动 Android 构建。正式版请看带版本号的 Release。
+
+        - 包名：`com.openminis.linux`
+        - 启动器名称：**Minis Ultra**
+        - 架构：arm64-v8a
+        - NDK：r29 `29.0.14206865`（与应用内安装同一修订号，不回退 r28）
+        - versionName：`2.0.39`
+        - versionCode：239
+        - 签名说明见 docs/SIGNING.md
+    """.trimIndent()
+
     private fun rolling(
         code: Int? = 29,
         name: String? = "1.17-linux",
@@ -151,6 +167,71 @@ class UpdateVersionLogicTest {
     fun `stripReleaseMetadata drops version lines`() {
         val raw = "Rolling Android build.\n\n- versionName: `1.17-linux`\n- versionCode: 29"
         assertEquals("Rolling Android build.", UpdateVersionLogic.stripReleaseMetadata(raw))
+    }
+
+    @Test
+    fun `live rolling body parses across the full-width colon`() {
+        assertEquals(239, UpdateVersionLogic.parseVersionCodeFromBody(LIVE_ROLLING_BODY))
+        assertEquals("2.0.39", UpdateVersionLogic.parseVersionNameFromBody(LIVE_ROLLING_BODY))
+    }
+
+    @Test
+    fun `stripReleaseMetadata drops full-width colon metadata lines`() {
+        val stripped = UpdateVersionLogic.stripReleaseMetadata(LIVE_ROLLING_BODY)
+        assertTrue(stripped.contains("滚动 Android 构建"))
+        assertFalse(stripped.contains("versionCode"))
+        assertFalse(stripped.contains("versionName"))
+    }
+
+    @Test
+    fun `live body with same versionCode is not an upgrade`() {
+        // Regression for the 2026-10-05 false positive: the full-width colon
+        // made the body parsers return null, the "android" apkName beat
+        // "2.0.39" lexicographically, and the newer asset timestamp claimed
+        // an update for users already on the newest build. Candidate fields
+        // are built through the same parsers UpdateChecker uses, so this
+        // exercises the whole pipeline instead of hand-seeding bodyCode.
+        val c = rolling(updatedAt = 10_000_000L).copy(
+            bodyVersionCode = UpdateVersionLogic.parseVersionCodeFromBody(LIVE_ROLLING_BODY),
+            bodyVersionName = UpdateVersionLogic.parseVersionNameFromBody(LIVE_ROLLING_BODY),
+        )
+        assertFalse(
+            UpdateVersionLogic.isNewerThanLocal(
+                c, "2.0.39", 239, localLastUpdateMs = 1_000_000L,
+            ),
+        )
+    }
+
+    @Test
+    fun `unreadable rolling body fails closed even with newer asset`() {
+        val c = rolling(code = null, name = null, updatedAt = 10_000_000L)
+        assertFalse(
+            UpdateVersionLogic.isNewerThanLocal(
+                c, "2.0.39", 239, localLastUpdateMs = 1_000_000L,
+            ),
+        )
+    }
+
+    @Test
+    fun `highestPublished compares pairwise not against zero`() {
+        assertEquals(
+            "1.0.1-linux",
+            UpdateVersionLogic.highestPublished(listOf(tagged("1.0-linux"), tagged("1.0.1-linux")))?.tagName,
+        )
+        assertEquals(
+            "1.0.1-linux",
+            UpdateVersionLogic.highestPublished(listOf(tagged("1.0.1-linux"), tagged("1.0-linux")))?.tagName,
+        )
+    }
+
+    @Test
+    fun `resolveChangelog prefers tagged notes for rolling even when boilerplate is long`() {
+        val notes = "## Changes\n- real release notes for the same version"
+        val rollingRel = rolling(code = 239, name = "2.0.39").copy(changelog = LIVE_ROLLING_BODY)
+        val tag = tagged("2.0.39-linux").copy(changelog = notes)
+        val resolved = UpdateVersionLogic.resolveChangelog(rollingRel, listOf(rollingRel, tag))
+        assertTrue(resolved.contains("real release notes"))
+        assertFalse(resolved.contains("滚动 Android 构建"))
     }
 
     @Test
