@@ -57,6 +57,18 @@ class ActiveRun internal constructor(
         currentAssistantText = text
     }
 
+    /**
+     * [T-android-stop-dup-row] True once ANY round of this run committed an
+     * assistant row (each round persist marks [lastPersistedAssistantText]).
+     * The stop-path partial-text fallback must NOT re-persist the canonical
+     * message's cumulative content when rounds are already durable — that
+     * wrote a second full-text assistant row and rendered the whole reply
+     * twice after reload.
+     */
+    fun hasPersistedAssistantText(): Boolean = synchronized(progressLock) {
+        lastPersistedAssistantText.isNotEmpty()
+    }
+
     fun unpersistedAssistantText(): String = synchronized(progressLock) {
         val current = currentAssistantText
         val persisted = lastPersistedAssistantText

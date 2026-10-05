@@ -12,6 +12,33 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
+/**
+ * [T-android-stop-dup-row] Decide what text the interrupted-turn persistence
+ * should commit.
+ *
+ *  - [unpersisted] non-empty → the tail the run tracked as not-yet-durable
+ *    (current cumulative minus the last round-persisted prefix). Commit it.
+ *  - [unpersisted] empty and this run persisted NOTHING yet
+ *    ([runPersistedAny] false) → the delta never reached the run tracker
+ *    (no ActiveRun, or stream died before the first text delta); rescue the
+ *    canonical message content so the user's partial reply survives reload.
+ *  - [unpersisted] empty but rounds ARE already durable → there is nothing
+ *    left to commit. Returning the canonical cumulative content here (the
+ *    pre-fix behaviour) inserted a second assistant row repeating every
+ *    already-persisted round, so a reload rendered the reply twice: the
+ *    per-round rows as split paragraphs and the duplicate row as one
+ *    run-on paragraph under the fold bar.
+ */
+internal fun resolveInterruptedPartialText(
+    unpersisted: String,
+    capturedContent: String,
+    runPersistedAny: Boolean,
+): String = when {
+    unpersisted.isNotEmpty() -> unpersisted
+    !runPersistedAny -> capturedContent
+    else -> ""
+}
+
 /** Finish cancellation with captured run/session data, never the newly selected chat. */
 internal suspend fun ChatViewModel.finishStoppedRun(
     run: ActiveRun?,
@@ -31,7 +58,17 @@ internal suspend fun ChatViewModel.finishStoppedRun(
         capturedAssistantId?.let(::flushStreamingDelta)
         if (activeSessionId == stoppedSessionId) {
             val captured = _messages.value.firstOrNull { it.id == capturedAssistantId }
-            if (partialText.isEmpty()) partialText = captured?.content.orEmpty()
+            // [T-android-stop-dup-row] Only rescue the canonical cumulative
+            // content when this run committed nothing durable yet; otherwise
+            // the already-persisted round rows plus this row render the same
+            // reply twice after a reload.
+            if (partialText.isEmpty()) {
+                partialText = resolveInterruptedPartialText(
+                    unpersisted = "",
+                    capturedContent = captured?.content.orEmpty(),
+                    runPersistedAny = run?.hasPersistedAssistantText() == true,
+                )
+            }
             _messages.value = _messages.value.map { message ->
                 if (message.role == "assistant" && (message.id == capturedAssistantId || message.isStreaming)) {
                     val cancelledBlocks = message.toolBlocks.map { block ->
