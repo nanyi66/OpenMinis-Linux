@@ -53,10 +53,11 @@ object UpdateDownloadManager {
 
     // Mirrors that re-host a GitHub release/download URL as a path suffix.
     // Order is irrelevant — they race. The origin URL is always added too.
+    // [T-about-update-mirrors] ghproxy.com 301-redirects every request to a
+    // parked lander (verified 2026-10-05) and mirror.ghproxy.com no longer
+    // answers — both used to win the TTFB race and stream non-APK bytes.
     private val MIRROR_PREFIXES = listOf(
-        "https://ghproxy.com/",
         "https://gh-proxy.com/",
-        "https://mirror.ghproxy.com/",
     )
 
     private val client = OkHttpClient.Builder()
@@ -227,7 +228,15 @@ object UpdateDownloadManager {
         winner ?: originUrl
     }
 
-    /** Probe a URL: issue a 1-byte Range GET, true when it responds OK/206. */
+    /**
+     * Probe a URL: issue a 1-byte Range GET and accept ONLY a 206 response.
+     *
+     * Requiring 206 (not 200) for node selection does two jobs: it proves
+     * the node is Range-capable (the download resumes via Range), and it
+     * rejects parked-domain landers that answer 200 with an HTML page —
+     * those used to win the race and then "download" a non-APK payload.
+     * The download path itself still handles 200/206/416 for robustness.
+     */
     private suspend fun probeTtfb(url: String): Boolean = withContext(Dispatchers.IO) {
         runCatching {
             val req = Request.Builder()
@@ -235,7 +244,7 @@ object UpdateDownloadManager {
                 .header("Range", "bytes=0-0")
                 .build()
             probeClient.newCall(req).execute().use { resp ->
-                resp.code == 200 || resp.code == 206
+                resp.code == 206
             }
         }.getOrDefault(false)
     }
