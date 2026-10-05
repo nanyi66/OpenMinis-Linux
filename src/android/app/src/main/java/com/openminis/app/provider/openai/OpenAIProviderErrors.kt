@@ -7,6 +7,15 @@ import com.openminis.app.provider.safeOptString
 import org.json.JSONObject
 
 internal fun OpenAIProvider.mapHttpError(statusCode: Int, body: String, retryAfterHeader: String? = null): LLMError {
+    // [T-zen-structured-error] OpenCode Zen answers with a structured body
+    // ({"error":{"type":"FreeTierError",…}}) whose type carries semantics
+    // the generic HTTP mapping cannot see. Measured 2026-10-05: 9 of 14
+    // free-lane ids answer 403 FreeTierError — the upstream (Console) serves
+    // those models' free lane only to the official OpenCode client, and the
+    // caller's key (public/anonymous) never enters into it. ModelError means
+    // the catalogue lists the id but the server refuses to serve it. Both are
+    // provider refusals where "Invalid API key" is simply false.
+    zenStructuredProviderRefusal(body)?.let { return it }
     if (statusCode == 401 || statusCode == 403) {
         // [T-llm-error-401-model-scope] A gateway fronting an upstream pool
         // answers 401 for failures in the channel IT picked, not for anything
@@ -87,6 +96,38 @@ internal fun OpenAIProvider.mapHttpError(statusCode: Int, body: String, retryAft
 }
 
 internal fun OpenAIProvider.mapError(error: Throwable): LLMError = mapThrowableToLLMError(error)
+
+/**
+ * [T-zen-structured-error] Parses an OpenCode Zen structured refusal body —
+ * `{"type":"error","error":{"type":"FreeTierError"|"ModelError","message":…}}` —
+ * into a precise [LLMError]; null when the body is not one, so generic OpenAI
+ * bodies flow to the historical mapping untouched. The upstream message is
+ * user-visible verbatim, so it goes through [maskSecrets] like every other
+ * server-provided string in this file.
+ */
+internal fun zenStructuredProviderRefusal(body: String): LLMError? {
+    val json = try {
+        JSONObject(body)
+    } catch (_: Exception) {
+        return null
+    }
+    if (json.optString("type", "") != "error") return null
+    val error = json.optJSONObject("error") ?: return null
+    val type = error.optString("type", "")
+    val message = error.safeOptString("message", "").orEmpty()
+    return when (type) {
+        "FreeTierError" -> LLMError.ProviderError(
+            "FreeTierError: ${maskSecrets(message.ifBlank { "free tier refused" })} — " +
+                "the server serves this model's free lane only to the official OpenCode client; " +
+                "your key and plan are not involved. Pick another -free model (e.g. space-bunny-free).",
+        )
+        "ModelError" -> LLMError.ProviderError(
+            "ModelError: ${maskSecrets(message.ifBlank { "model refused by server" })} — " +
+                "the server's catalogue lists this id but refuses to serve it.",
+        )
+        else -> null
+    }
+}
 
 /** Receiver-free so the unit tests can exercise the mapping directly. */
 internal fun mapThrowableToLLMError(error: Throwable): LLMError {
